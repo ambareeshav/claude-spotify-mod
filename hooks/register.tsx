@@ -5,17 +5,18 @@ import { REDIRECT_URI, authUrl, challengeFor, extractCode, randomState, randomVe
 import { tokenSetFrom, toPlaylists, toPlaylistTracks, type Playlist, type PlaylistTrack, type TokenSet } from './lib/spotifyApi';
 
 // Spotify controls above the prompt (the same band tetris and pong draw in), plus a fullscreen
-// sidebar for the things AppleScript can't do at all: liking tracks and browsing/playing
-// playlists. The band talks to the local Spotify desktop app via `osascript` — no login, macOS
-// only. The sidebar talks to the real Spotify Web API — needs a one-time OAuth login (PKCE, no
-// client secret, no locally-run server: the redirect URL's `code` is copied back by hand).
+// sidebar for the things AppleScript can't do at all: browsing/playing playlists. The band talks
+// to the local Spotify desktop app via `osascript` — no login, macOS only, and it also carries
+// "like" once connected, since liking needs the Web API regardless of which surface asks for it.
+// The sidebar talks to the real Spotify Web API — needs a one-time OAuth login (PKCE, no client
+// secret, no locally-run server: the redirect URL's `code` is copied back by hand).
 
 const PANE_ID = 'spotify-full';
 const TOKEN_STORE_KEY = 'spotify:tokens';
 
-// wide enough for the fullest row — close, full, prev, play/pause, next, mute, each bracketed
-// and gapped — without clipping the trailing buttons out of the clickable area
-const WIDTH = 64;
+// wide enough for the fullest row of icon-only buttons without clipping the trailing ones out
+// of the clickable area
+const WIDTH = 40;
 
 // the fields the AppleScript prints, joined by FIELD_SEP, in this order.
 // `playerState`, not `st` — Spotify's own scripting dictionary reserves `st` and refuses to
@@ -60,6 +61,7 @@ let pendingLogin: { verifier: string; state: string } | null = null;
 let loginError: string | null = null;
 let paneError: string | null = null;
 let saved: boolean | null = null;
+let lastSavedTrackId: string | null = null;
 let playlists: Playlist[] | null = null;
 let selectedPlaylist: Playlist | null = null;
 let playlistTracks: PlaylistTrack[] | null = null;
@@ -197,9 +199,8 @@ async function spotifyApi($: any, options: any, method: string, path: string, bo
   return JSON.parse(res.text);
 }
 
-// its own try/catch, not the generic afterPaneAction one: a login failure belongs in
-// `loginError`, which the not-connected screen renders — `paneError` is a different slot,
-// only shown once connected, so a caught-but-misrouted error here used to render as nothing
+// its own try/catch, not a generic one: a login failure belongs in `loginError`, which the
+// not-connected screen renders — routing it anywhere else used to render as nothing at all
 async function startLogin($: any, options: any): Promise<void> {
   try {
     const clientId = clientIdFrom(options);
@@ -220,7 +221,9 @@ async function submitLoginUrl($: any, options: any, pasted: string): Promise<voi
     const code = extractCode(pasted, pendingLogin.state);
     await exchangeCode($, options, code);
     loginError = null;
-    await refreshPaneData($, options);
+    await loadPlaylists($, options).catch((err: any) => {
+      paneError = err?.message ?? String(err);
+    });
   } catch (err: any) {
     loginError = err?.message ?? String(err);
   }
@@ -235,6 +238,22 @@ async function refreshSavedStatus($: any, options: any): Promise<void> {
   saved = Array.isArray(json) ? !!json[0] : null;
 }
 
+// only re-checks when the track actually changed, so this never fires more than once per song —
+// the band ticks every second and calling the Web API that often would be both wasteful and a
+// good way to get rate-limited; a failure here (e.g. a Development-Mode app whose account isn't
+// allow-listed for library scopes) is swallowed rather than surfaced, since it shouldn't block
+// anything else in the band
+async function refreshSavedIfTrackChanged($: any, options: any): Promise<void> {
+  if (!auth || !nowPlaying.running || !nowPlaying.trackId) return;
+  if (nowPlaying.trackId === lastSavedTrackId) return;
+  lastSavedTrackId = nowPlaying.trackId;
+  try {
+    await refreshSavedStatus($, options);
+  } catch {
+    saved = null;
+  }
+}
+
 async function toggleLike($: any, options: any): Promise<void> {
   if (!nowPlaying.running || !nowPlaying.trackId) return;
   const id = nowPlaying.trackId;
@@ -245,6 +264,10 @@ async function toggleLike($: any, options: any): Promise<void> {
     await spotifyApi($, options, 'PUT', `/me/tracks?ids=${id}`);
     saved = true;
   }
+  // we just set the authoritative state ourselves — without this, the refreshSavedIfTrackChanged
+  // call every band action makes right after would treat this as an unseen track (if it's the
+  // first time this session) and immediately re-fetch, clobbering what we just set back to stale
+  lastSavedTrackId = id;
 }
 
 async function loadPlaylists($: any, options: any): Promise<void> {
@@ -285,18 +308,13 @@ async function playPlaylist($: any, options: any, playlistId: string, shuffle: b
   await playOnDevice($, options, { context_uri: `spotify:playlist:${playlistId}` });
 }
 
-async function refreshPaneData($: any, options: any): Promise<void> {
-  try {
-    paneError = null;
-    await Promise.all([loadPlaylists($, options), refreshSavedStatus($, options)]);
-  } catch (err: any) {
-    paneError = err?.message ?? String(err);
-  }
-}
-
 async function openFullscreen($: any, options: any): Promise<void> {
   if (!auth) await loadAuth($);
-  if (auth) await refreshPaneData($, options);
+  if (auth && playlists === null) {
+    await loadPlaylists($, options).catch((err: any) => {
+      paneError = err?.message ?? String(err);
+    });
+  }
   await $.ui.open({ id: PANE_ID, title: 'Spotify', focus: true, closeOnEscape: true }).catch((err: any) =>
     $.ui.log(`spotify: ui.open failed: ${err}`),
   );
@@ -315,6 +333,7 @@ function renderBand($: any, e: any, options: any) {
       errorMessage = err?.message ?? String(err);
     }
     await refreshNowPlaying($);
+    await refreshSavedIfTrackChanged($, options);
     $.ui.invalidate('ui.render');
   };
 
@@ -323,9 +342,9 @@ function renderBand($: any, e: any, options: any) {
     $.ui.invalidate('ui.render');
   };
 
-  const closeButton = <Button key="spotify:close" label="close" onPress={close} />;
+  const closeButton = <Button key="spotify:close" plain label="✕" onPress={close} />;
   const fullButton = (
-    <Button key="spotify:full" label="⛶ full" onPress={() => openFullscreen($, options).catch((err: any) => $.ui.log(`spotify: ${err}`))} />
+    <Button key="spotify:full" plain label="⛶" onPress={() => openFullscreen($, options).catch((err: any) => $.ui.log(`spotify: ${err}`))} />
   );
   // a zero-size clock: its own timer posts a tick every second so the position/bar keep
   // moving without needing a button press, even though the hooks module has no timer of its own
@@ -338,7 +357,7 @@ function renderBand($: any, e: any, options: any) {
         <Box flexDirection="row" columnGap={1}>
           {closeButton}
           {fullButton}
-          <Button key="retry" label="retry" onPress={afterAction(async () => {})} />
+          <Button key="retry" plain label="↻" onPress={afterAction(async () => {})} />
         </Box>
         <Markdown text={`**Spotify mod error**\n\n${errorMessage}`} />
       </Box>
@@ -350,24 +369,25 @@ function renderBand($: any, e: any, options: any) {
           {closeButton}
           {fullButton}
           <Button key="open" label="open Spotify" onPress={afterAction(() => openSpotify($))} />
-          <Button key="refresh" label="refresh" onPress={afterAction(async () => {})} />
+          <Button key="refresh" plain label="↻" onPress={afterAction(async () => {})} />
         </Box>
         <Text dimColor>Spotify isn't running</Text>
       </Box>
     );
   } else {
     const np = nowPlaying;
-    const playLabel = np.state === 'playing' ? '⏸ pause' : '▶ play';
-    const muteLabel = np.volume > 0 ? '🔇 mute' : '🔊 unmute';
     content = (
       <Box flexDirection="column">
         <Box flexDirection="row" columnGap={1}>
           {closeButton}
           {fullButton}
-          <Button key="prev" label="⏮ prev" onPress={afterAction(() => previousTrack($))} />
-          <Button key="playpause" label={playLabel} onPress={afterAction(() => playPause($))} />
-          <Button key="next" label="⏭ next" onPress={afterAction(() => nextTrack($))} />
-          <Button key="mute" label={muteLabel} onPress={afterAction(() => toggleMute($))} />
+          <Button key="prev" plain label="⏮" onPress={afterAction(() => previousTrack($))} />
+          <Button key="playpause" plain label={np.state === 'playing' ? '⏸' : '▶'} onPress={afterAction(() => playPause($))} />
+          <Button key="next" plain label="⏭" onPress={afterAction(() => nextTrack($))} />
+          <Button key="mute" plain label={np.volume > 0 ? '🔇' : '🔊'} onPress={afterAction(() => toggleMute($))} />
+          {auth && (
+            <Button key="like" plain label={saved ? '💚' : '🤍'} onPress={afterAction(() => toggleLike($, options))} />
+          )}
         </Box>
         <Markdown text={`**${np.track || '(unknown track)'}**  ·  ${np.artist}${np.album ? ' · ' + np.album : ''}`} />
         <Text dimColor wrap="truncate-end">{`${formatTime(np.positionSec)}  ${progressBar(np.positionSec, np.durationMs, 16)}  ${formatTime(np.durationMs / 1000)}`}</Text>
@@ -383,7 +403,7 @@ function renderBand($: any, e: any, options: any) {
   );
 }
 
-// ---------- sidebar (Pane) ----------
+// ---------- sidebar (Pane): playlists only, no player — that's the band's job ----------
 
 function renderFullscreen($: any, e: any, options: any) {
   const { Box, Text, Button, Markdown, Input } = $.ui.resolve(e);
@@ -397,49 +417,10 @@ function renderFullscreen($: any, e: any, options: any) {
     $.ui.invalidate('ui.render');
   };
 
-  const np = nowPlaying;
-  const nowPlayingBlock = np.running ? (
-    <Box flexDirection="column">
-      <Markdown text={`**${np.track}**  ·  ${np.artist}`} />
-      <Box flexDirection="row" columnGap={1}>
-        <Button
-          key="pane:playpause"
-          label={np.state === 'playing' ? '⏸ pause' : '▶ play'}
-          onPress={afterPaneAction(async () => {
-            await playPause($);
-            await refreshNowPlaying($);
-          })}
-        />
-        <Button
-          key="pane:prev"
-          label="⏮ prev"
-          onPress={afterPaneAction(async () => {
-            await previousTrack($);
-            await refreshNowPlaying($);
-          })}
-        />
-        <Button
-          key="pane:next"
-          label="⏭ next"
-          onPress={afterPaneAction(async () => {
-            await nextTrack($);
-            await refreshNowPlaying($);
-          })}
-        />
-        {auth && (
-          <Button key="pane:like" label={saved ? '💚 liked' : '🤍 like'} onPress={afterPaneAction(() => toggleLike($, options))} />
-        )}
-      </Box>
-    </Box>
-  ) : (
-    <Text dimColor>Spotify isn't running</Text>
-  );
-
   if (!auth) {
     return (
       <Box flexDirection="column">
-        {nowPlayingBlock}
-        <Markdown text="**Connect Spotify** for liking tracks and browsing/playing your playlists." />
+        <Markdown text="**Connect Spotify** to browse and play your playlists." />
         <Button key="pane:connect" label="connect Spotify" onPress={afterPaneAction(() => startLogin($, options))} />
         {pendingLogin && (
           <Box flexDirection="column">
@@ -461,33 +442,33 @@ function renderFullscreen($: any, e: any, options: any) {
     );
   }
 
-  if (paneError) {
-    return (
-      <Box flexDirection="column">
-        {nowPlayingBlock}
-        <Markdown text={`**error:** ${paneError}`} />
-        <Button key="pane:retry" label="retry" onPress={afterPaneAction(() => refreshPaneData($, options))} />
-      </Box>
-    );
-  }
+  // a dismissible banner, not a screen that replaces navigation — a failed load anywhere used
+  // to hide the back button along with everything else, leaving no way out of a broken view
+  const errorBanner = paneError ? (
+    <Box flexDirection="row" columnGap={1}>
+      <Text color="red" wrap="wrap">{paneError}</Text>
+      <Button key="pane:dismiss-error" plain label="✕" onPress={afterPaneAction(async () => { paneError = null; })} />
+    </Box>
+  ) : null;
 
   if (selectedPlaylist) {
     const playlist = selectedPlaylist;
     return (
       <Box flexDirection="column">
-        {nowPlayingBlock}
         <Box flexDirection="row" columnGap={1}>
           <Button
             key="pane:back-playlists"
-            label="‹ playlists"
+            plain
+            label="‹"
             onPress={afterPaneAction(async () => {
               selectedPlaylist = null;
               playlistTracks = null;
             })}
           />
-          <Button key="pane:shuffle-play" label="🔀 shuffle play" onPress={afterPaneAction(() => playPlaylist($, options, playlist.id, true))} />
+          <Button key="pane:shuffle-play" plain label="🔀" onPress={afterPaneAction(() => playPlaylist($, options, playlist.id, true))} />
+          <Markdown text={`**${playlist.name}**`} />
         </Box>
-        <Markdown text={`**${playlist.name}**`} />
+        {errorBanner}
         {playlistTracks === null ? (
           <Text dimColor>loading…</Text>
         ) : (
@@ -508,8 +489,8 @@ function renderFullscreen($: any, e: any, options: any) {
 
   return (
     <Box flexDirection="column">
-      {nowPlayingBlock}
       <Markdown text="**Playlists**" />
+      {errorBanner}
       {playlists === null ? (
         <Text dimColor>loading…</Text>
       ) : playlists.length === 0 ? (
@@ -537,7 +518,7 @@ function renderFullscreen($: any, e: any, options: any) {
 
 // ---------- wiring ----------
 
-async function handleCommandRun($: any, e: any): Promise<{ text?: string }> {
+async function handleCommandRun($: any, e: any, options: any): Promise<{ text?: string }> {
   const arg = (e.args as string).trim().toLowerCase();
   if (arg === 'stop' || arg === 'close') {
     open = false;
@@ -547,8 +528,9 @@ async function handleCommandRun($: any, e: any): Promise<{ text?: string }> {
 
   open = true;
   await refreshNowPlaying($);
+  await refreshSavedIfTrackChanged($, options);
   $.ui.invalidate('ui.render');
-  return { text: '$Spotify · prev/play-pause/next/mute above the prompt, ⛶ full for playlists · Esc returns to it · /spotify stop closes' };
+  return { text: '$Spotify · controls above the prompt, ⛶ for playlists · Esc returns to it · /spotify stop closes' };
 }
 
 async function handleAbovePromptRender($: any, e: any, next: any, options: any) {
@@ -569,10 +551,11 @@ async function handlePaneRender($: any, e: any, next: any, options: any) {
   return renderFullscreen($, e, options);
 }
 
-async function handleUiMessage($: any, e: any, next: any) {
+async function handleUiMessage($: any, e: any, next: any, options: any) {
   const data = e.data as { tick?: unknown } | null;
   if (!data?.tick) return next(e);
   await refreshNowPlaying($);
+  await refreshSavedIfTrackChanged($, options);
   $.ui.invalidate('ui.render');
   return { props: {} };
 }
@@ -593,8 +576,8 @@ async function handleSessionStart($: any, e: any, next: any) {
 
 export const register: Register = (on, options) => {
   on('session.start', handleSessionStart);
-  on('command.run', { command: 'spotify' }, handleCommandRun);
+  on('command.run', { command: 'spotify' }, ($, e) => handleCommandRun($, e, options));
   on('ui.render', { component: 'AbovePrompt' }, ($, e, next) => handleAbovePromptRender($, e, next, options));
   on('ui.render', { component: 'Pane' }, ($, e, next) => handlePaneRender($, e, next, options));
-  on('ui.message', handleUiMessage);
+  on('ui.message', ($, e, next) => handleUiMessage($, e, next, options));
 };

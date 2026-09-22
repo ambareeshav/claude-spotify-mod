@@ -109,6 +109,10 @@ function installWebApiMocks(on: any, opts: { apiCalls?: string[] } = {}) {
     if (url.includes('/me/tracks/contains')) {
       return { value: { status: 200, ok: true, headers: {}, text: JSON.stringify([false]) } };
     }
+    if (url.includes('/me/tracks')) {
+      // PUT to like, DELETE to unlike — Spotify answers both with an empty 200
+      return { value: { status: 200, ok: true, headers: {}, text: '' } };
+    }
     if (url.includes('/me/player/play')) {
       return { value: { status: 204, ok: true, headers: {}, text: '' } };
     }
@@ -133,7 +137,7 @@ test('the band shows the current track when Spotify is running', async ($: any, 
   const ui = await $.ui.mount({ plugin: 'spotify', surface: 'terminal', component: 'AbovePrompt', requestId: 'spotify', props: BAND_PROPS });
   expect(await ui.find({ text: /Midnight City/ })).toBeDefined();
   expect(await ui.find({ text: /M83/ })).toBeDefined();
-  expect(await ui.find({ text: /⏸ pause/ })).toBeDefined();
+  expect(await ui.find({ text: '⏸' })).toBeDefined();
   await ui.unmount();
 });
 
@@ -145,7 +149,7 @@ test('every control button is present and pressable, not clipped out of the row'
   await $.command.run({ command: 'spotify', args: '' });
   const ui = await $.ui.mount({ plugin: 'spotify', surface: 'terminal', component: 'AbovePrompt', requestId: 'spotify', props: BAND_PROPS });
 
-  for (const text of [/close/, /⏮ prev/, /⏸ pause/, /⏭ next/, /🔇 mute/]) {
+  for (const text of [/✕/, /⛶/, /⏮/, /⏸/, /⏭/, /🔇/]) {
     expect(await ui.find({ text })).toBeDefined();
   }
 
@@ -227,7 +231,28 @@ test('the sidebar prompts to connect, and pressing connect without a configured 
   await pane.unmount();
 });
 
-test('once connected, the sidebar lists playlists and plays a track from one', async ($: any, on: any) => {
+test('once connected, the like button shows up in the band (not the sidebar) and toggles', async ($: any, on: any) => {
+  register(on, { clientId: 'test-client-id' });
+  installMocks(on);
+  installStoreMocks(on, { initialToken: { accessToken: 'access-1', refreshToken: 'refresh-1', expiresAt: Date.now() + 60 * 60 * 1000 } });
+  const apiCalls: string[] = [];
+  installWebApiMocks(on, { apiCalls });
+
+  await $.command.run({ command: 'spotify', args: '' });
+  const band = await $.ui.mount({ plugin: 'spotify', surface: 'terminal', component: 'AbovePrompt', requestId: 'spotify', props: BAND_PROPS });
+  // loads `auth` from the store — the band itself never calls loadAuth on its own, only
+  // session.start and opening the sidebar do
+  await band.press({ key: 'spotify:full' });
+
+  expect(await band.find({ text: /🤍/ })).toBeDefined();
+  await band.press({ key: 'like' });
+  expect(apiCalls.some(c => c.startsWith('PUT https://api.spotify.com/v1/me/tracks'))).toBe(true);
+  expect(await band.find({ text: /💚/ })).toBeDefined();
+
+  await band.unmount();
+});
+
+test('once connected, the sidebar lists playlists (with real track counts, no player) and plays a track from one', async ($: any, on: any) => {
   register(on, { clientId: 'test-client-id' });
   installMocks(on);
   installStoreMocks(on, { initialToken: { accessToken: 'access-1', refreshToken: 'refresh-1', expiresAt: Date.now() + 60 * 60 * 1000 } });
@@ -240,14 +265,46 @@ test('once connected, the sidebar lists playlists and plays a track from one', a
   await band.unmount();
 
   const pane = await $.ui.mount({ plugin: 'spotify', surface: 'terminal', component: 'Pane', requestId: 'spotify-full', props: PANE_PROPS });
-  expect(await pane.find({ text: /Focus/ })).toBeDefined();
-  expect(await pane.find({ text: /🤍 like/ })).toBeDefined();
+  expect(await pane.find({ text: /Focus \(2\)/ })).toBeDefined(); // the real track count, not "(0)"
+  expect(await pane.find({ text: /🤍|💚|⏸|▶/ })).toBeUndefined(); // no player controls in the sidebar anymore
 
   await pane.press({ key: 'playlist:pl1' });
   expect(await pane.find({ text: /Song A/ })).toBeDefined();
 
   await pane.press({ key: 'track:spotify:track:aaa' });
   expect(apiCalls.some(c => c.startsWith('PUT https://api.spotify.com/v1/me/player/play'))).toBe(true);
+
+  await pane.unmount();
+});
+
+test('a failed track load shows an error inline without hiding the back button', async ($: any, on: any) => {
+  register(on, { clientId: 'test-client-id' });
+  installMocks(on);
+  installStoreMocks(on, { initialToken: { accessToken: 'access-1', refreshToken: 'refresh-1', expiresAt: Date.now() + 60 * 60 * 1000 } });
+  on('http.fetch', async ($: any, e: any) => {
+    const url = e.url as string;
+    if (url.includes('/me/playlists')) {
+      return { value: { status: 200, ok: true, headers: {}, text: JSON.stringify({ items: [{ id: 'pl1', name: 'Focus', tracks: { total: 2 } }] }) } };
+    }
+    if (url.includes('/playlists/pl1/tracks')) {
+      return { value: { status: 403, ok: false, headers: {}, text: '{"error":{"status":403,"message":"Forbidden"}}' } };
+    }
+    return { value: { status: 404, ok: false, headers: {}, text: `unmocked url: ${url}` } };
+  });
+
+  await $.command.run({ command: 'spotify', args: '' });
+  const band = await $.ui.mount({ plugin: 'spotify', surface: 'terminal', component: 'AbovePrompt', requestId: 'spotify', props: BAND_PROPS });
+  await band.press({ key: 'spotify:full' });
+  await band.unmount();
+
+  const pane = await $.ui.mount({ plugin: 'spotify', surface: 'terminal', component: 'Pane', requestId: 'spotify-full', props: PANE_PROPS });
+  await pane.press({ key: 'playlist:pl1' });
+
+  expect(await pane.find({ text: /403/ })).toBeDefined();
+  // the whole point of the fix: the back button is still there and still works
+  expect(await pane.find({ text: '‹' })).toBeDefined();
+  await pane.press({ key: 'pane:back-playlists' });
+  expect(await pane.find({ text: /Playlists/ })).toBeDefined();
 
   await pane.unmount();
 });
