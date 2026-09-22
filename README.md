@@ -50,7 +50,8 @@ No client secret is stored or needed (PKCE), and no local server ever actually l
 - Claude Code with `CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1` — the `$` API is early access and may change between releases.
 - The first control you press may prompt macOS for permission to let Claude Code (your terminal) control Spotify via Accessibility/Automation — allow it once.
 - For liking/playlists: a free Spotify Developer app (see above) and a one-time browser login. A Spotify Premium account is needed to *start* playback remotely via the Web API (Spotify's own restriction, not this mod's) — reading and liking work on any account.
-- **A new Spotify Developer app starts in "Development Mode"**, which only lets *allow-listed* accounts use it — if the like button or playlists 403 right after connecting, add your own Spotify account under the app's **Users and Access** section in the dashboard. This is Spotify's restriction, not something this mod can work around.
+- **A new Spotify Developer app starts in "Development Mode"**, which only lets *allow-listed* accounts use it — if the like button or a playlist's tracks 403 right after connecting, add your own Spotify account under the app's **Users and Access** section in the dashboard.
+- **Spotify-generated playlists can't be read via the Web API at all, for any third-party app** — Discover Weekly, Daily Mix N, Release Radar, Liked Songs, a Blend, and similar are blocked by a Spotify policy change from November 2024, not by this mod or by Development Mode. A playlist you made yourself works; one of these won't, ever, until Spotify changes that policy. The sidebar's error message tells you which of these two 403 causes it might be when a playlist's tracks fail to load.
 
 ## Known limitations / next steps
 

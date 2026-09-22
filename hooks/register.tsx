@@ -14,9 +14,9 @@ import { tokenSetFrom, toPlaylists, toPlaylistTracks, type Playlist, type Playli
 const PANE_ID = 'spotify-full';
 const TOKEN_STORE_KEY = 'spotify:tokens';
 
-// wide enough for the fullest row of icon-only buttons without clipping the trailing ones out
-// of the clickable area
-const WIDTH = 40;
+// wide enough for the fullest row — close, full, prev, play/pause, next, mute, like, each
+// bracketed (`[ X ]`) and gapped — without clipping the trailing ones out of the clickable area
+const WIDTH = 60;
 
 // the fields the AppleScript prints, joined by FIELD_SEP, in this order.
 // `playerState`, not `st` — Spotify's own scripting dictionary reserves `st` and refuses to
@@ -276,8 +276,22 @@ async function loadPlaylists($: any, options: any): Promise<void> {
 }
 
 async function loadPlaylistTracks($: any, options: any, playlistId: string): Promise<void> {
-  const json = await spotifyApi($, options, 'GET', `/playlists/${playlistId}/tracks?limit=50`);
-  playlistTracks = toPlaylistTracks(json);
+  try {
+    const json = await spotifyApi($, options, 'GET', `/playlists/${playlistId}/tracks?limit=50`);
+    playlistTracks = toPlaylistTracks(json);
+  } catch (err: any) {
+    const message = err?.message ?? String(err);
+    // a 403 here is ambiguous on Spotify's side between two different causes with two
+    // different fixes, so name both rather than guess: since Nov 2024 Spotify blocks every
+    // third-party app from reading algorithmic/owned-by-Spotify playlists (Discover Weekly,
+    // Daily Mix, Release Radar, Liked Songs, a Blend, ...) — no app can read those, ever; a
+    // Development-Mode app whose account isn't allow-listed gets the same status for every
+    // playlist instead
+    if (message.includes('403')) {
+      throw new Error(`${message}\n\nEither this is a Spotify-generated playlist (Discover Weekly, Daily Mix, Release Radar, Liked Songs, a Blend...) — blocked from every third-party app since Spotify's Nov 2024 API change, not fixable here — or your account still isn't allow-listed for this app (Users and Access in the dashboard). Try a playlist you made yourself to tell which one it is.`);
+    }
+    throw err;
+  }
 }
 
 async function getActiveDeviceId($: any, options: any): Promise<string | null> {
@@ -342,9 +356,12 @@ function renderBand($: any, e: any, options: any) {
     $.ui.invalidate('ui.render');
   };
 
-  const closeButton = <Button key="spotify:close" plain label="✕" onPress={close} />;
+  // no `plain`: the default bracket chrome (`[ X ]`) gives every icon the same drawn width and
+  // real spacing around it, instead of bare glyphs of wildly different visual widths butted
+  // together — a wider row gap (2, not 1) adds breathing room between the brackets too
+  const closeButton = <Button key="spotify:close" label="✕" onPress={close} />;
   const fullButton = (
-    <Button key="spotify:full" plain label="⛶" onPress={() => openFullscreen($, options).catch((err: any) => $.ui.log(`spotify: ${err}`))} />
+    <Button key="spotify:full" label="⛶" onPress={() => openFullscreen($, options).catch((err: any) => $.ui.log(`spotify: ${err}`))} />
   );
   // a zero-size clock: its own timer posts a tick every second so the position/bar keep
   // moving without needing a button press, even though the hooks module has no timer of its own
@@ -354,10 +371,10 @@ function renderBand($: any, e: any, options: any) {
   if (errorMessage) {
     content = (
       <Box flexDirection="column">
-        <Box flexDirection="row" columnGap={1}>
+        <Box flexDirection="row" columnGap={2}>
           {closeButton}
           {fullButton}
-          <Button key="retry" plain label="↻" onPress={afterAction(async () => {})} />
+          <Button key="retry" label="↻" onPress={afterAction(async () => {})} />
         </Box>
         <Markdown text={`**Spotify mod error**\n\n${errorMessage}`} />
       </Box>
@@ -365,11 +382,11 @@ function renderBand($: any, e: any, options: any) {
   } else if (!nowPlaying.running) {
     content = (
       <Box flexDirection="column">
-        <Box flexDirection="row" columnGap={1}>
+        <Box flexDirection="row" columnGap={2}>
           {closeButton}
           {fullButton}
           <Button key="open" label="open Spotify" onPress={afterAction(() => openSpotify($))} />
-          <Button key="refresh" plain label="↻" onPress={afterAction(async () => {})} />
+          <Button key="refresh" label="↻" onPress={afterAction(async () => {})} />
         </Box>
         <Text dimColor>Spotify isn't running</Text>
       </Box>
@@ -378,15 +395,15 @@ function renderBand($: any, e: any, options: any) {
     const np = nowPlaying;
     content = (
       <Box flexDirection="column">
-        <Box flexDirection="row" columnGap={1}>
+        <Box flexDirection="row" columnGap={2}>
           {closeButton}
           {fullButton}
-          <Button key="prev" plain label="⏮" onPress={afterAction(() => previousTrack($))} />
-          <Button key="playpause" plain label={np.state === 'playing' ? '⏸' : '▶'} onPress={afterAction(() => playPause($))} />
-          <Button key="next" plain label="⏭" onPress={afterAction(() => nextTrack($))} />
-          <Button key="mute" plain label={np.volume > 0 ? '🔇' : '🔊'} onPress={afterAction(() => toggleMute($))} />
+          <Button key="prev" label="⏮" onPress={afterAction(() => previousTrack($))} />
+          <Button key="playpause" label={np.state === 'playing' ? '⏸' : '▶'} onPress={afterAction(() => playPause($))} />
+          <Button key="next" label="⏭" onPress={afterAction(() => nextTrack($))} />
+          <Button key="mute" label={np.volume > 0 ? '🔇' : '🔊'} onPress={afterAction(() => toggleMute($))} />
           {auth && (
-            <Button key="like" plain label={saved ? '💚' : '🤍'} onPress={afterAction(() => toggleLike($, options))} />
+            <Button key="like" label={saved ? '💚' : '🤍'} onPress={afterAction(() => toggleLike($, options))} />
           )}
         </Box>
         <Markdown text={`**${np.track || '(unknown track)'}**  ·  ${np.artist}${np.album ? ' · ' + np.album : ''}`} />
@@ -445,9 +462,9 @@ function renderFullscreen($: any, e: any, options: any) {
   // a dismissible banner, not a screen that replaces navigation — a failed load anywhere used
   // to hide the back button along with everything else, leaving no way out of a broken view
   const errorBanner = paneError ? (
-    <Box flexDirection="row" columnGap={1}>
+    <Box flexDirection="row" columnGap={2}>
       <Text color="red" wrap="wrap">{paneError}</Text>
-      <Button key="pane:dismiss-error" plain label="✕" onPress={afterPaneAction(async () => { paneError = null; })} />
+      <Button key="pane:dismiss-error" label="✕" onPress={afterPaneAction(async () => { paneError = null; })} />
     </Box>
   ) : null;
 
@@ -455,17 +472,16 @@ function renderFullscreen($: any, e: any, options: any) {
     const playlist = selectedPlaylist;
     return (
       <Box flexDirection="column">
-        <Box flexDirection="row" columnGap={1}>
+        <Box flexDirection="row" columnGap={2}>
           <Button
             key="pane:back-playlists"
-            plain
             label="‹"
             onPress={afterPaneAction(async () => {
               selectedPlaylist = null;
               playlistTracks = null;
             })}
           />
-          <Button key="pane:shuffle-play" plain label="🔀" onPress={afterPaneAction(() => playPlaylist($, options, playlist.id, true))} />
+          <Button key="pane:shuffle-play" label="🔀" onPress={afterPaneAction(() => playPlaylist($, options, playlist.id, true))} />
           <Markdown text={`**${playlist.name}**`} />
         </Box>
         {errorBanner}
