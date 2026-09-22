@@ -1,0 +1,23 @@
+{
+  "name": "spotify",
+  "version": "0.2.0",
+  "description": "Spotify controls above the prompt (prev/play-pause/next/mute, AppleScript, no login) with a fullscreen sidebar for liking tracks and browsing/playing your playlists (Spotify Web API, one-time login).",
+  "author": {
+    "name": "Ambareesha Vittal"
+  },
+  "license": "MIT",
+  "keywords": [
+    "spotify",
+    "music",
+    "terminal",
+    "tui",
+    "function-hooks"
+  ],
+  "userConfig": {
+    "clientId": {
+      "type": "string",
+      "title": "Spotify Client ID",
+      "description": "From a free app at developer.spotify.com/dashboard. Set its Redirect URI to exactly http://127.0.0.1:8907/callback. Only needed for the sidebar's like/playlist features — the band's play/pause/next/prev/mute work without it."
+    }
+  }
+}

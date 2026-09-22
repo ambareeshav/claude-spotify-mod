@@ -1,0 +1,6 @@
+{
+  "description": "Spotify controls in a docked sidebar: /spotify opens it, drawn from a ui.render hook matched on {component: 'Pane'}, driven by osascript against the local Spotify app",
+  "modules": [
+    "./register.tsx"
+  ]
+}
