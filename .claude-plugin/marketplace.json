@@ -1,0 +1,15 @@
+{
+  "name": "spotify",
+  "owner": { "name": "Ambareesha Vittal" },
+  "metadata": { "description": "spotify: Spotify controls above the Claude Code prompt, with a fullscreen sidebar for liking and playlists" },
+  "plugins": [
+    {
+      "name": "spotify",
+      "source": "./",
+      "description": "Spotify controls above the prompt (prev/play-pause/next/mute, AppleScript, no login) with a fullscreen sidebar for liking tracks and browsing/playing your playlists (Spotify Web API, one-time login).",
+      "homepage": "https://github.com/ambareeshav/claude-spotify-mod",
+      "repository": "https://github.com/ambareeshav/claude-spotify-mod",
+      "license": "MIT"
+    }
+  ]
+}

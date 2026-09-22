@@ -2,6 +2,15 @@
 
 Spotify controls above the prompt — the same `AbovePrompt` band tetris and pong draw in — via `/spotify`. Prev, play/pause, next, mute/unmute, and what's currently playing, with no setup at all. A `⛶ full` button opens a fullscreen sidebar for liking the current track and browsing/playing your playlists, which does need a one-time login.
 
+## Install
+
+```
+claude plugin marketplace add ambareeshav/claude-spotify-mod
+claude plugin install spotify@spotify
+```
+
+Restart Claude Code (a full quit/relaunch) and `/spotify` is available.
+
 ## Play
 
 1. `/spotify` opens the band (`/spotify stop` closes it).
