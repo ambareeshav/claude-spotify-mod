@@ -210,7 +210,10 @@ async function spotifyApi($: any, options: any, method: string, path: string, bo
     return spotifyApi($, options, method, path, body, true);
   }
   if (res.status === 204 || !res.text) return null;
-  if (!res.ok) throw new Error(`Spotify: ${method} ${path} → ${res.status} ${res.text.slice(0, 200)}`);
+  // status leads, not trails — the band's dim error line truncates long text, and the status
+  // code is the one part of this that must survive that; a full URL with query params easily
+  // eats the whole line's width budget before ever reaching what "→ 403" used to end with
+  if (!res.ok) throw new Error(`Spotify ${res.status}: ${method} ${path} ${res.text.slice(0, 200)}`);
   return JSON.parse(res.text);
 }
 
@@ -321,7 +324,9 @@ async function refreshSavedIfTrackChanged($: any, options: any): Promise<void> {
     await refreshSavedStatus($, options);
   } catch (err: any) {
     saved = null;
-    savedError = err?.message ?? String(err);
+    // the query string (a full track id) eats width for nothing useful in a one-line hint —
+    // the status code and endpoint name are what actually explain the failure
+    savedError = (err?.message ?? String(err)).replace(/\?\S+/, '');
   }
 }
 
