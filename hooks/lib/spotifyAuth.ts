@@ -2,10 +2,11 @@
 // calls live in register.tsx. `crypto`, `atob`/`btoa`, `TextEncoder` and `URL` are runtime
 // globals, not the `$` API, so they're fine to use here.
 
-// a loopback redirect URI never needs a real listener: Spotify allows it unregistered-server,
-// and after it redirects (the browser shows "can't reach this page"), the code is still sitting
-// right there in the address bar to copy back into /spotify login <pasted url>
-export const REDIRECT_URI = 'http://127.0.0.1:8907/callback';
+// a loopback redirect URI never needs a real listener for Spotify's side of things (it allows an
+// unregistered one, and the code lands in the address bar regardless) — but catching it
+// automatically instead of asking for a copy-paste does need something briefly listening there
+export const CALLBACK_PORT = 8907;
+export const REDIRECT_URI = `http://127.0.0.1:${CALLBACK_PORT}/callback`;
 
 export const SCOPES = [
   'user-read-playback-state',
@@ -68,4 +69,45 @@ export function extractCode(pasted: string, expectedState: string): string {
   if (!code) throw new Error('that URL has no "code" in it — paste the one from right after you clicked Agree');
   if (state !== expectedState) throw new Error('that code is from an older /spotify login — run login again and paste the newest one');
   return code;
+}
+
+// where the one-shot local listener (below) drops what it caught, and the script that runs it —
+// state-scoped so a stale file from an earlier, abandoned login is never mistaken for this one
+export function callbackFilePath(state: string): string {
+  return `/tmp/spotify-mod-callback-${state}.json`;
+}
+
+export function serverScriptFilePath(state: string): string {
+  return `/tmp/spotify-mod-server-${state}.py`;
+}
+
+// a one-shot HTTP server: takes the one redirect Spotify sends, writes its code/state/error to
+// CALLBACK_FILE as JSON, answers the browser with a page saying to come back, and shuts itself
+// down — python3 is reliably preinstalled on macOS, so this needs no compiled helper. `$` has no
+// long-lived-process primitive (`process.run` is one-shot, resolves only once its child exits),
+// so this is spawned backgrounded (`nohup ... & disown`) from a shell that itself exits right
+// away, and the hooks module polls for the file it wrote on the ticker's existing once-a-second
+// tick instead of waiting on the listener directly.
+export function loopbackServerScript(state: string): string {
+  const filePath = callbackFilePath(state);
+  return [
+    'import http.server, json, threading, urllib.parse',
+    `PATH = ${JSON.stringify(filePath)}`,
+    'class H(http.server.BaseHTTPRequestHandler):',
+    '    def do_GET(self):',
+    '        q = urllib.parse.urlparse(self.path)',
+    '        p = urllib.parse.parse_qs(q.query)',
+    "        data = {'code': p.get('code', [''])[0], 'state': p.get('state', [''])[0], 'error': p.get('error', [''])[0]}",
+    "        open(PATH, 'w').write(json.dumps(data))",
+    '        self.send_response(200)',
+    "        self.send_header('Content-Type', 'text/html')",
+    '        self.end_headers()',
+    "        self.wfile.write(b'<html><body>Connected. You can close this tab and go back to Claude Code.</body></html>')",
+    '        threading.Thread(target=self.server.shutdown).start()',
+    '    def log_message(self, *a):',
+    '        pass',
+    `srv = http.server.HTTPServer(('127.0.0.1', ${CALLBACK_PORT}), H)`,
+    'srv.timeout = 180',
+    'srv.handle_request()',
+  ].join('\n');
 }

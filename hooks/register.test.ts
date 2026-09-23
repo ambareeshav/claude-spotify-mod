@@ -1,5 +1,6 @@
 import { test, expect } from 'claude-code/testing';
 import { register } from './register';
+import { callbackFilePath, loopbackServerScript, serverScriptFilePath } from './lib/spotifyAuth';
 
 const SEP = '\x1f';
 const TRACK_ID = '3E7dfMvvCLjXCzDXf1a4ma';
@@ -29,6 +30,10 @@ function installMocks(on: any, opts: { running?: boolean; playCalls?: string[]; 
       return { value: { exitCode: 0, stdout: '', stderr: '' } };
     }
     if (cmd === 'open') {
+      calls.push(e.argv.join(' '));
+      return { value: { exitCode: 0, stdout: '', stderr: '' } };
+    }
+    if (cmd === '/bin/sh' || cmd === 'rm') {
       calls.push(e.argv.join(' '));
       return { value: { exitCode: 0, stdout: '', stderr: '' } };
     }
@@ -309,6 +314,53 @@ test('a failed track load shows an error inline without hiding the back button',
   await pane.press({ key: 'pane:back-playlists' });
   expect(await pane.find({ text: /Playlists/ })).toBeDefined();
 
+  await pane.unmount();
+});
+
+// `startLogin` gates the whole login attempt on a configured Client ID before it ever gets to
+// writing/spawning the local listener (see the "surfaces a clear error" test above) — and the
+// test harness always resolves a configured Client ID back to '' regardless of what's passed to
+// register() directly, so there's no way to drive startLogin far enough in a test to observe the
+// listener actually getting spawned or the tick handler picking its callback file up. What *is*
+// testable, and covers the part most likely to have an actual bug: the pure script-generation
+// logic those two steps depend on.
+test('the local callback listener script is scoped to the right state, file, and port', async () => {
+  const state = 'abc-123-def';
+  const script = loopbackServerScript(state);
+  expect(script).toContain(callbackFilePath(state));
+  expect(script).toContain('8907');
+  expect(serverScriptFilePath(state)).toContain(state);
+  expect(callbackFilePath(state)).toContain(state);
+  // a different login's state must never resolve to this one's file
+  expect(callbackFilePath('other-state')).not.toBe(callbackFilePath(state));
+});
+
+test('/spotify logout clears the connection and returns the sidebar to the connect screen', async ($: any, on: any) => {
+  register(on, { clientId: 'test-client-id' });
+  installMocks(on);
+  const storeWrites: unknown[] = [];
+  on('store.get', async ($: any, e: any) => ({
+    value: e.key === 'spotify:tokens' ? { accessToken: 'access-1', refreshToken: 'refresh-1', expiresAt: Date.now() + 60 * 60 * 1000 } : undefined,
+  }));
+  on('store.set', async ($: any, e: any) => {
+    if (e.key === 'spotify:tokens') storeWrites.push(e.value);
+    return { value: undefined };
+  });
+  on('ui.open', async () => ({ value: undefined }));
+  installWebApiMocks(on);
+
+  await $.command.run({ command: 'spotify', args: '' });
+  const band = await $.ui.mount({ plugin: 'spotify', surface: 'terminal', component: 'AbovePrompt', requestId: 'spotify', props: BAND_PROPS });
+  await band.press({ key: 'spotify:full' }); // loads `auth` from the store
+
+  const result = await $.command.run({ command: 'spotify', args: 'logout' });
+  expect(result.text).toContain('disconnected');
+  expect(storeWrites[storeWrites.length - 1]).toBe(null);
+
+  const pane = await $.ui.mount({ plugin: 'spotify', surface: 'terminal', component: 'Pane', requestId: 'spotify-full', props: PANE_PROPS });
+  expect(await pane.find({ text: /connect Spotify/ })).toBeDefined();
+
+  await band.unmount();
   await pane.unmount();
 });
 

@@ -1,7 +1,17 @@
 /* @jsx h */
 import type { Register } from 'claude-code';
 import { formatTime, parseNowPlaying, progressBar, type NowPlaying } from './lib/applescript';
-import { REDIRECT_URI, authUrl, challengeFor, extractCode, randomState, randomVerifier } from './lib/spotifyAuth';
+import {
+  REDIRECT_URI,
+  authUrl,
+  callbackFilePath,
+  challengeFor,
+  extractCode,
+  loopbackServerScript,
+  randomState,
+  randomVerifier,
+  serverScriptFilePath,
+} from './lib/spotifyAuth';
 import { tokenSetFrom, toPlaylists, toPlaylistTracks, type Playlist, type PlaylistTrack, type TokenSet } from './lib/spotifyApi';
 
 // Spotify controls above the prompt (the same band tetris and pong draw in), plus a fullscreen
@@ -209,6 +219,13 @@ async function startLogin($: any, options: any): Promise<void> {
     const challenge = await challengeFor(verifier);
     pendingLogin = { verifier, state };
     loginError = null;
+    // best-effort: writes and backgrounds the one-shot local listener that lets the tick
+    // handler (below) pick the code up on its own. If python3 is missing or the port's taken,
+    // this silently does nothing and the manual-paste `Input` in the sidebar still works.
+    await $.fs.write(serverScriptFilePath(state), loopbackServerScript(state)).catch(() => {});
+    await $.process
+      .run(['/bin/sh', '-c', `nohup python3 ${serverScriptFilePath(state)} > /dev/null 2>&1 & disown`])
+      .catch(() => {});
     await $.process.run(['open', authUrl(clientId, challenge, state)]);
   } catch (err: any) {
     loginError = err?.message ?? String(err);
@@ -227,6 +244,51 @@ async function submitLoginUrl($: any, options: any, pasted: string): Promise<voi
   } catch (err: any) {
     loginError = err?.message ?? String(err);
   }
+}
+
+// polled once a second by the ticker's existing tick (only while a login is pending, so this
+// never runs otherwise): picks up what the backgrounded listener in startLogin caught, so the
+// sidebar's copy-paste `Input` is a fallback, not the only way in
+async function checkLoginCallback($: any, options: any): Promise<void> {
+  if (!pendingLogin) return;
+  const state = pendingLogin.state;
+  const path = callbackFilePath(state);
+  let exists = false;
+  try {
+    exists = await $.fs.exists(path);
+  } catch {
+    return;
+  }
+  if (!exists) return;
+  try {
+    const raw = await $.fs.read(path);
+    const data = JSON.parse(raw as string);
+    await $.process.run(['rm', '-f', path, serverScriptFilePath(state)]).catch(() => {});
+    if (data.state && data.state !== state) return; // a stale redirect from an earlier, abandoned login
+    if (data.error) throw new Error(`Spotify denied the request: ${data.error}`);
+    if (!data.code) throw new Error('the local callback caught a redirect with no code in it — try again');
+    await exchangeCode($, options, data.code);
+    loginError = null;
+    await loadPlaylists($, options).catch((err: any) => {
+      paneError = err?.message ?? String(err);
+    });
+  } catch (err: any) {
+    loginError = err?.message ?? String(err);
+  }
+}
+
+// clears everything a login built up, for a clean re-test of the whole flow (`/spotify logout`)
+async function logout($: any): Promise<void> {
+  auth = null;
+  pendingLogin = null;
+  loginError = null;
+  paneError = null;
+  saved = null;
+  lastSavedTrackId = null;
+  playlists = null;
+  selectedPlaylist = null;
+  playlistTracks = null;
+  await $.store.set(TOKEN_STORE_KEY, null).catch((err: any) => $.ui.log(`spotify: token store clear failed: ${err}`));
 }
 
 async function refreshSavedStatus($: any, options: any): Promise<void> {
@@ -443,8 +505,9 @@ function renderFullscreen($: any, e: any, options: any) {
         {pendingLogin && (
           <Box flexDirection="column">
             <Text dimColor>
-              Approve in the browser, then paste the URL it redirects to below — it'll look like the page failed to
-              load, that's expected, the code is in the address bar.
+              Approve in the browser — this connects on its own within a second or two once you do. If it doesn't
+              (no python3, or something else is using the port), paste the URL it redirected to below instead;
+              it'll look like the page failed to load, that's expected, the code is in the address bar.
             </Text>
             <Input
               key="pane:login-url"
@@ -542,6 +605,11 @@ async function handleCommandRun($: any, e: any, options: any): Promise<{ text?: 
     $.ui.invalidate('ui.render');
     return { text: '$Spotify closed' };
   }
+  if (arg === 'logout' || arg === 'disconnect') {
+    await logout($);
+    $.ui.invalidate('ui.render');
+    return { text: '$Spotify disconnected — press "connect Spotify" in the sidebar to log in again' };
+  }
 
   open = true;
   await refreshNowPlaying($);
@@ -573,6 +641,7 @@ async function handleUiMessage($: any, e: any, next: any, options: any) {
   if (!data?.tick) return next(e);
   await refreshNowPlaying($);
   await refreshSavedIfTrackChanged($, options);
+  if (pendingLogin) await checkLoginCallback($, options);
   $.ui.invalidate('ui.render');
   return { props: {} };
 }
@@ -583,8 +652,8 @@ async function handleSessionStart($: any, e: any, next: any) {
   await $.command
     .register({
       name: 'spotify',
-      description: '$Spotify controls above the prompt (stop closes)',
-      argumentHint: '[stop]',
+      description: '$Spotify controls above the prompt (stop closes, logout resets the connection)',
+      argumentHint: '[stop|logout]',
       immediate: true,
     })
     .catch((err: any) => $.ui.log(`spotify: /spotify not registered: ${err}`));
