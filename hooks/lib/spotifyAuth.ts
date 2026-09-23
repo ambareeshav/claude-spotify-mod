@@ -108,6 +108,22 @@ export function loopbackServerScript(state: string): string {
   return [
     'import http.server, json, time, urllib.parse',
     `PATH = ${JSON.stringify(filePath)}`,
+    'def page(ok):',
+    '    if ok:',
+    "        icon, title, sub = '\\u2713', 'Connected to Claude Code', 'You can close this tab now.'",
+    '    else:',
+    "        icon, title, sub = '\\u2715', 'Connection failed', 'Go back to Claude Code and try again.'",
+    "    return ('<!doctype html><html><head><meta charset=\"utf-8\"><title>' + title + '</title><style>'"
+      + " 'body{background:#121212;color:#fff;font-family:-apple-system,BlinkMacSystemFont,\"Segoe UI\",sans-serif;'"
+      + " 'display:flex;align-items:center;justify-content:center;height:100vh;margin:0}'"
+      + " '.card{text-align:center}'"
+      + " '.icon{width:56px;height:56px;border-radius:50%;display:flex;align-items:center;justify-content:center;'"
+      + " 'margin:0 auto 20px;font-size:26px;font-weight:bold}'"
+      + " '.icon.ok{background:#1db954;color:#000}' '.icon.err{background:#e22134;color:#fff}'"
+      + " 'h1{font-size:18px;font-weight:600;margin:0 0 6px}' 'p{color:#b3b3b3;font-size:13px;margin:0}'"
+      + " '</style></head><body><div class=\"card\"><div class=\"icon ' + ('ok' if ok else 'err') + '\">'"
+      + " + icon + '</div><h1>' + title + '</h1><p>' + sub + '</p></div>'"
+      + " '<script>setTimeout(function(){window.close()},1500)</script></body></html>')",
     'class H(http.server.BaseHTTPRequestHandler):',
     '    def do_GET(self):',
     '        q = urllib.parse.urlparse(self.path)',
@@ -119,7 +135,7 @@ export function loopbackServerScript(state: string): string {
     '        self.send_response(200)',
     "        self.send_header('Content-Type', 'text/html')",
     '        self.end_headers()',
-    "        self.wfile.write(b'<html><body>Connected. You can close this tab and go back to Claude Code.</body></html>' if is_callback else b'')",
+    "        self.wfile.write(page(bool(code)).encode('utf-8') if is_callback else b'')",
     '        if is_callback:',
     '            try:',
     "                open(PATH, 'w').write(json.dumps({'code': code, 'state': state, 'error': error}))",

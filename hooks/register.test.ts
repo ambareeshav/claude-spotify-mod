@@ -444,6 +444,10 @@ test('the local callback listener script is scoped to the right state, file, and
   // preconnect or a stray favicon fetch reaches the port first, which reads as the page hanging
   expect(script).toContain('got_it');
   expect(script).toMatch(/while not srv\.got_it/);
+  // the page the browser actually renders distinguishes success from denial, rather than
+  // showing the same "connected" text regardless of what Spotify's redirect actually says
+  expect(script).toContain('Connected to Claude Code');
+  expect(script).toContain('Connection failed');
 });
 
 test('/spotify logout clears the connection and returns the sidebar to the connect screen', async ($: any, on: any) => {
