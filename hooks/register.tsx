@@ -3,6 +3,7 @@ import type { Register } from 'claude-code';
 import { formatTime, parseNowPlaying, progressBar, type NowPlaying } from './lib/applescript';
 import {
   REDIRECT_URI,
+  SHARED_CLIENT_ID,
   authUrl,
   callbackFilePath,
   challengeFor,
@@ -81,10 +82,12 @@ let playlists: Playlist[] | null = null;
 let selectedPlaylist: Playlist | null = null;
 let playlistTracks: PlaylistTrack[] | null = null;
 
+// most installs never set this — it's an optional escape hatch for someone who wants their own
+// Spotify Developer app instead of this mod's shared one (its own Development Mode allow-list, a
+// personal rate limit, whatever the reason). Everyone else gets SHARED_CLIENT_ID for free.
 function clientIdFrom(options: any): string {
   const id = (options?.clientId ?? '').trim();
-  if (!id) throw new Error('set a Spotify Client ID in this plugin\'s config first (see the README)');
-  return id;
+  return id || SHARED_CLIENT_ID;
 }
 
 // ---------- local desktop control (AppleScript) ----------

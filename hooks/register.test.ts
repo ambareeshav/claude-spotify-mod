@@ -250,13 +250,11 @@ test('a persistently failing saved-status check shows "don\'t know" (not "not li
   await band.unmount();
 });
 
-test('the sidebar prompts to connect, and pressing connect without a configured Client ID surfaces a clear error', async ($: any, on: any) => {
-  // note: this test environment always resolves userConfig to its manifest defaults
-  // (clientId has none, so it's ''), regardless of what's passed to register() directly —
-  // there's no way from a test to simulate a *configured* Client ID, so the real login
-  // round-trip isn't exercisable here. What is testable, and what actually matters most:
-  // that a missing Client ID fails loudly in the right place (see the next test for the
-  // fix this one caught — the error used to be swallowed into a slot the screen never shows).
+test('with no Client ID configured, connecting falls back to the shared app instead of failing', async ($: any, on: any) => {
+  // `register(on, {})` here really does mean "nobody set a Client ID" — the test harness
+  // always resolves userConfig to its manifest defaults regardless of what's passed to
+  // register() directly, and the manifest sets none. `clientIdFrom` used to throw in this
+  // case; now it falls back to the mod's own shared Client ID, so login proceeds normally.
   register(on, {});
   installMocks(on);
   installStoreMocks(on);
@@ -271,8 +269,54 @@ test('the sidebar prompts to connect, and pressing connect without a configured 
   expect(await pane.find({ text: /connect Spotify/ })).toBeDefined();
 
   await pane.press({ key: 'pane:connect' });
-  expect(await pane.find({ text: /Spotify Client ID/ })).toBeDefined();
+  // no error — the auth URL got opened (via the shared Client ID) and a pending login started
+  expect(await pane.find({ text: /Spotify Client ID/ })).toBeUndefined();
+  expect(await pane.find({ text: /approve in the browser/i })).toBeDefined();
 
+  await pane.unmount();
+});
+
+test('connecting spawns a backgrounded local listener, and the tick picks up the code it catches — no paste needed', async ($: any, on: any) => {
+  register(on, {});
+  const calls: string[] = [];
+  installMocks(on, { playCalls: calls });
+  installStoreMocks(on);
+  const files = new Map<string, string>();
+  on('fs.write', async ($: any, e: any) => {
+    files.set(e.path, e.text);
+    return { value: undefined };
+  });
+  on('fs.read', async ($: any, e: any) => {
+    if (!files.has(e.path)) throw new Error(`no such file: ${e.path}`);
+    return { value: files.get(e.path) };
+  });
+  on('fs.exists', async ($: any, e: any) => ({ value: files.has(e.path) }));
+  const apiCalls: string[] = [];
+  installWebApiMocks(on, { apiCalls });
+
+  await $.command.run({ command: 'spotify', args: '' });
+  const band = await $.ui.mount({ plugin: 'spotify', surface: 'terminal', component: 'AbovePrompt', requestId: 'spotify', props: BAND_PROPS });
+  await band.press({ key: 'spotify:full' });
+
+  const pane = await $.ui.mount({ plugin: 'spotify', surface: 'terminal', component: 'Pane', requestId: 'spotify-full', props: PANE_PROPS });
+  await pane.press({ key: 'pane:connect' });
+
+  // a listener script got written and spawned backgrounded, ready for the real redirect to land on
+  expect(calls.some(c => c.includes('nohup python3'))).toBe(true);
+  const scriptPath = [...files.keys()].find(p => p.includes('spotify-mod-server-'));
+  expect(scriptPath).toBeDefined();
+  const state = scriptPath!.match(/spotify-mod-server-(.+)\.py$/)![1];
+
+  // simulate what that listener would have written once Spotify actually redirected to it
+  files.set(`/tmp/spotify-mod-callback-${state}.json`, JSON.stringify({ code: 'auth-code-1', state, error: '' }));
+
+  await band.advance(1000); // the ticker's existing once-a-second tick, which now also polls for this
+
+  expect(await pane.find({ text: /Focus/ })).toBeDefined(); // playlists loaded — login completed on its own
+  expect(apiCalls.some(c => c.startsWith('POST https://accounts.spotify.com/api/token'))).toBe(true);
+  expect(calls.some(c => c.startsWith('rm -f'))).toBe(true); // callback + script cleaned up after
+
+  await band.unmount();
   await pane.unmount();
 });
 
@@ -393,13 +437,6 @@ test('a failed track load shows an error inline without hiding the back button',
   await pane.unmount();
 });
 
-// `startLogin` gates the whole login attempt on a configured Client ID before it ever gets to
-// writing/spawning the local listener (see the "surfaces a clear error" test above) — and the
-// test harness always resolves a configured Client ID back to '' regardless of what's passed to
-// register() directly, so there's no way to drive startLogin far enough in a test to observe the
-// listener actually getting spawned or the tick handler picking its callback file up. What *is*
-// testable, and covers the part most likely to have an actual bug: the pure script-generation
-// logic those two steps depend on.
 test('the local callback listener script is scoped to the right state, file, and port', async () => {
   const state = 'abc-123-def';
   const script = loopbackServerScript(state);

@@ -22,16 +22,17 @@ Restart Claude Code (a full quit/relaunch) and `/spotify` is available.
 
 The band's transport controls need nothing. Liking a track and the sidebar's playlist browsing need a real Spotify login, because AppleScript's local Spotify dictionary doesn't expose playlists or a "save track" action at all — this is a hard requirement of the Spotify Web API, not a shortcut skipped.
 
-1. Create a free app at [developer.spotify.com/dashboard](https://developer.spotify.com/dashboard).
-2. In its settings, add this **exact** Redirect URI: `http://127.0.0.1:8907/callback`.
-3. Copy its **Client ID** into this plugin's config (`clientId` in its `userConfig` — via your Claude Code plugin settings, or `.claude/settings.json`).
-4. In the sidebar, press **connect Spotify**. Your browser opens Spotify's own login/consent page.
-5. After you approve, the browser redirects to `127.0.0.1:8907`. Behind the scenes, pressing **connect Spotify** also spawned a one-shot local listener on that exact port, so this should connect automatically within a second or two — no copy-paste needed.
-6. If it doesn't (no `python3` on your machine, or something else is already using that port), the browser instead shows a "can't reach this page" error — the code is still sitting right there in the address bar. Copy that URL (or just the `code=...` part) and paste it into the sidebar's input field, Enter to submit, as a fallback.
+1. In the sidebar, press **connect Spotify**. Your browser opens Spotify's own login/consent page — no Spotify Developer app or Client ID of your own to set up, this mod ships with a shared one.
+2. After you approve, the browser redirects to `127.0.0.1:8907`. Behind the scenes, pressing **connect Spotify** also spawned a one-shot local listener on that exact port, so this should connect automatically within a second or two — no copy-paste needed.
+3. If it doesn't (no `python3` on your machine, or something else is already using that port), the browser instead shows a "can't reach this page" error — the code is still sitting right there in the address bar. Copy that URL (or just the `code=...` part) and paste it into the sidebar's input field, Enter to submit, as a fallback.
 
-No client secret is stored or needed (PKCE). The local listener is one-shot and scoped to a single login attempt (a fresh random `state` each time) — it shuts itself down the moment it catches the redirect, or after three minutes, whichever comes first.
+No client secret is stored or needed (PKCE), and neither is the shared Client ID — it's not a secret in this flow at all, which is exactly what lets it ship in the open.
+
+**"Sign in with Spotify" failed / access denied?** The shared app is currently in Spotify's Development Mode, which caps it at 25 allow-listed accounts (see Requirements below) — ask whoever's maintaining this install to add your Spotify account. This goes away once the app clears Spotify's Extended Quota review.
 
 **Testing the flow again from scratch**: `/spotify logout` clears the stored connection (and all in-memory sidebar state) without touching your Spotify account's own authorization — press **connect Spotify** again afterward to redo the login.
+
+**Want to use your own Spotify app instead?** Set `clientId` in this plugin's config (`userConfig` — via your Claude Code plugin settings, or `.claude/settings.json`) to your own app's Client ID from [developer.spotify.com/dashboard](https://developer.spotify.com/dashboard) (Redirect URI must be exactly `http://127.0.0.1:8907/callback`). Only worth doing if you specifically don't want to depend on the shared app's allow-list.
 
 ## How it works
 
@@ -55,12 +56,13 @@ No client secret is stored or needed (PKCE). The local listener is one-shot and 
 - macOS with the Spotify desktop app installed (not the web player) — the band always needs this.
 - Claude Code with `CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1` — the `$` API is early access and may change between releases.
 - The first control you press may prompt macOS for permission to let Claude Code (your terminal) control Spotify via Accessibility/Automation — allow it once.
-- For liking/playlists: a free Spotify Developer app (see above) and a one-time browser login. A Spotify Premium account is needed to *start* playback remotely via the Web API (Spotify's own restriction, not this mod's) — reading and liking work on any account.
-- **A new Spotify Developer app starts in "Development Mode"**, which only lets *allow-listed* accounts use it — if the like button or a playlist's tracks 403 right after connecting, add your own Spotify account under the app's **Users and Access** section in the dashboard.
+- For liking/playlists: a one-time browser login (see above), nothing more. A Spotify Premium account is needed to *start* playback remotely via the Web API (Spotify's own restriction, not this mod's) — reading and liking work on any account.
+- **This mod's shared Spotify app is currently in "Development Mode"**, which only lets *allow-listed* accounts connect at all (capped at 25 total) — if connecting fails outright, or the like button/a playlist's tracks 403 right after connecting, your account likely isn't on that list yet. Ask whoever maintains this install to add it under the app's **Users and Access** section in its dashboard. This requirement disappears once the app clears Spotify's Extended Quota review.
 - **Spotify-generated *playlists* can't be read via the Web API at all, for any third-party app** — Discover Weekly, Daily Mix N, Release Radar, a Blend, and similar are blocked by a Spotify policy change from November 2024, not by this mod or by Development Mode. A playlist you made yourself works; one of these won't, ever, until Spotify changes that policy. (Liked Songs is *not* one of these — it's not a playlist at all, and this mod reads it from a different, unaffected endpoint. If it still 403s, that's the allow-listing issue above, not this one.) The sidebar's error message tells you which of the two it might be when a playlist's tracks fail to load.
 
 ## Known limitations / next steps
 
+- **Capped at 25 connected accounts until Extended Quota review.** The shared app is in Spotify's Development Mode; every new user has to be manually allow-listed until it's approved for Extended Quota Mode (removes the cap and the allow-list requirement entirely — a one-time Spotify submission, not built yet).
 - **The local OAuth listener needs `python3` and a free port 8907** — if either's missing, connecting falls back to copy-pasting the redirect URL by hand.
 - **The progress bar ticks once a second**, driven by the ticker `Client`'s own timer — not sample-accurate, but close enough to read at a glance.
 - **Session-scoped mute memory.** The volume mute restores to resets on plugin reload.
