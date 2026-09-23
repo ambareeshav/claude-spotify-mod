@@ -73,11 +73,12 @@ function installStoreMocks(on: any, opts: { initialToken?: unknown } = {}) {
   on('ui.open', async () => ({ value: undefined }));
 }
 
-function installWebApiMocks(on: any, opts: { apiCalls?: string[] } = {}) {
+function installWebApiMocks(on: any, opts: { apiCalls?: string[]; bodies?: string[] } = {}) {
   const calls = opts.apiCalls ?? [];
   on('http.fetch', async ($: any, e: any) => {
     const url = e.url as string;
     calls.push(`${e.init?.method ?? 'GET'} ${url}`);
+    opts.bodies?.push(e.init?.body ?? '');
 
     if (url.startsWith('https://accounts.spotify.com/api/token')) {
       return {
@@ -114,6 +115,19 @@ function installWebApiMocks(on: any, opts: { apiCalls?: string[] } = {}) {
     }
     if (url.includes('/me/tracks/contains')) {
       return { value: { status: 200, ok: true, headers: {}, text: JSON.stringify([false]) } };
+    }
+    if (url.includes('/me/tracks?limit=1')) {
+      return { value: { status: 200, ok: true, headers: {}, text: JSON.stringify({ total: 1 }) } };
+    }
+    if (url.includes('/me/tracks?limit=50')) {
+      return {
+        value: {
+          status: 200,
+          ok: true,
+          headers: {},
+          text: JSON.stringify({ items: [{ track: { uri: 'spotify:track:bbb', name: 'Song B', artists: [{ name: 'Artist B' }] } }] }),
+        },
+      };
     }
     if (url.includes('/me/tracks')) {
       // PUT to like, DELETE to unlike — Spotify answers both with an empty 200
@@ -211,6 +225,31 @@ test('the ticker client posts a tick every second, refreshing the position witho
   await ui.unmount();
 });
 
+test('a persistently failing saved-status check shows "don\'t know" (not "not liked") with why, not silence', async ($: any, on: any) => {
+  register(on, { clientId: 'test-client-id' });
+  installMocks(on);
+  installStoreMocks(on, { initialToken: { accessToken: 'access-1', refreshToken: 'refresh-1', expiresAt: Date.now() + 60 * 60 * 1000 } });
+  on('http.fetch', async ($: any, e: any) => {
+    const url = e.url as string;
+    if (url.includes('/me/tracks/contains')) {
+      return { value: { status: 403, ok: false, headers: {}, text: '{"error":{"status":403,"message":"Forbidden"}}' } };
+    }
+    return { value: { status: 404, ok: false, headers: {}, text: `unmocked url: ${url}` } };
+  });
+
+  await $.command.run({ command: 'spotify', args: '' });
+  const band = await $.ui.mount({ plugin: 'spotify', surface: 'terminal', component: 'AbovePrompt', requestId: 'spotify', props: BAND_PROPS });
+  await band.press({ key: 'spotify:full' });
+  await band.advance(1000); // the check runs now that auth is loaded, and fails
+
+  expect(await band.find({ text: '❓' })).toBeDefined();
+  expect(await band.find({ text: /🤍|💚/ })).toBeUndefined(); // never falls back to looking like a real answer
+  expect(await band.find({ text: /like status unknown/ })).toBeDefined();
+  expect(await band.find({ text: /403/ })).toBeDefined();
+
+  await band.unmount();
+});
+
 test('the sidebar prompts to connect, and pressing connect without a configured Client ID surfaces a clear error', async ($: any, on: any) => {
   // note: this test environment always resolves userConfig to its manifest defaults
   // (clientId has none, so it's ''), regardless of what's passed to register() directly —
@@ -249,6 +288,12 @@ test('once connected, the like button shows up in the band (not the sidebar) and
   // loads `auth` from the store — the band itself never calls loadAuth on its own, only
   // session.start and opening the sidebar do
   await band.press({ key: 'spotify:full' });
+  // before the first saved-status check resolves (auth was still null when the band's own
+  // tick ran it once already), the icon is "don't know yet", not "not liked" — those are
+  // different things and used to render identically; the next tick (now with auth loaded)
+  // resolves it for real
+  expect(await band.find({ text: '❓' })).toBeDefined();
+  await band.advance(1000);
 
   expect(await band.find({ text: /🤍/ })).toBeDefined();
   await band.press({ key: 'like' });
@@ -279,6 +324,37 @@ test('once connected, the sidebar lists playlists (with real track counts, no pl
 
   await pane.press({ key: 'track:spotify:track:aaa' });
   expect(apiCalls.some(c => c.startsWith('PUT https://api.spotify.com/v1/me/player/play'))).toBe(true);
+
+  await pane.unmount();
+});
+
+test('Liked Songs shows up as a synthetic playlist and plays in order or shuffled from its own loaded tracks', async ($: any, on: any) => {
+  register(on, { clientId: 'test-client-id' });
+  installMocks(on);
+  installStoreMocks(on, { initialToken: { accessToken: 'access-1', refreshToken: 'refresh-1', expiresAt: Date.now() + 60 * 60 * 1000 } });
+  const apiCalls: string[] = [];
+  const bodies: string[] = [];
+  installWebApiMocks(on, { apiCalls, bodies });
+
+  await $.command.run({ command: 'spotify', args: '' });
+  const band = await $.ui.mount({ plugin: 'spotify', surface: 'terminal', component: 'AbovePrompt', requestId: 'spotify', props: BAND_PROPS });
+  await band.press({ key: 'spotify:full' });
+  await band.unmount();
+
+  const pane = await $.ui.mount({ plugin: 'spotify', surface: 'terminal', component: 'Pane', requestId: 'spotify-full', props: PANE_PROPS });
+  expect(await pane.find({ text: /Liked Songs \(1\)/ })).toBeDefined(); // synthesized from /me/tracks's own total
+
+  await pane.press({ key: 'playlist:__liked__' });
+  expect(await pane.find({ text: /Song B/ })).toBeDefined();
+
+  await pane.press({ key: 'pane:play' });
+  expect(await pane.find({ text: /▶/ })).toBeDefined(); // the in-order button, next to shuffle
+  const playCall = apiCalls.findIndex(c => c.startsWith('PUT https://api.spotify.com/v1/me/player/play'));
+  expect(playCall).toBeGreaterThanOrEqual(0);
+  // Liked Songs has no context_uri of its own — it plays the loaded tracks' own uris directly,
+  // never Spotify's playlist-shuffle endpoint (which doesn't apply to it either)
+  expect(JSON.parse(bodies[playCall]).uris).toEqual(['spotify:track:bbb']);
+  expect(apiCalls.some(c => c.includes('/me/player/shuffle'))).toBe(false);
 
   await pane.unmount();
 });

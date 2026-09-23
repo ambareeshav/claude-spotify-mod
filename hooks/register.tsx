@@ -12,7 +12,7 @@ import {
   randomVerifier,
   serverScriptFilePath,
 } from './lib/spotifyAuth';
-import { tokenSetFrom, toPlaylists, toPlaylistTracks, type Playlist, type PlaylistTrack, type TokenSet } from './lib/spotifyApi';
+import { shuffled, tokenSetFrom, toPlaylists, toPlaylistTracks, type Playlist, type PlaylistTrack, type TokenSet } from './lib/spotifyApi';
 
 // Spotify controls above the prompt (the same band tetris and pong draw in), plus a fullscreen
 // sidebar for the things AppleScript can't do at all: browsing/playing playlists. The band talks
@@ -23,6 +23,10 @@ import { tokenSetFrom, toPlaylists, toPlaylistTracks, type Playlist, type Playli
 
 const PANE_ID = 'spotify-full';
 const TOKEN_STORE_KEY = 'spotify:tokens';
+// not a real playlist id — Spotify never returns "Liked Songs" from /me/playlists at all (it's
+// not a playlist resource), so this mod synthesizes one from /me/tracks (the "Your Music" saved
+// tracks endpoint) to make it browsable/playable the same way as any other playlist
+const LIKED_SONGS_ID = '__liked__';
 
 // wide enough for the fullest row — close, full, prev, play/pause, next, mute, like, each
 // bracketed (`[ X ]`) and gapped — without clipping the trailing ones out of the clickable area
@@ -70,7 +74,8 @@ let auth: TokenSet | null = null;
 let pendingLogin: { verifier: string; state: string } | null = null;
 let loginError: string | null = null;
 let paneError: string | null = null;
-let saved: boolean | null = null;
+let saved: boolean | null = null; // null: not checked yet, or the check itself failed — see savedError
+let savedError: string | null = null;
 let lastSavedTrackId: string | null = null;
 let playlists: Playlist[] | null = null;
 let selectedPlaylist: Playlist | null = null;
@@ -284,6 +289,7 @@ async function logout($: any): Promise<void> {
   loginError = null;
   paneError = null;
   saved = null;
+  savedError = null;
   lastSavedTrackId = null;
   playlists = null;
   selectedPlaylist = null;
@@ -298,21 +304,24 @@ async function refreshSavedStatus($: any, options: any): Promise<void> {
   }
   const json = await spotifyApi($, options, 'GET', `/me/tracks/contains?ids=${nowPlaying.trackId}`);
   saved = Array.isArray(json) ? !!json[0] : null;
+  savedError = null;
 }
 
 // only re-checks when the track actually changed, so this never fires more than once per song —
 // the band ticks every second and calling the Web API that often would be both wasteful and a
-// good way to get rate-limited; a failure here (e.g. a Development-Mode app whose account isn't
-// allow-listed for library scopes) is swallowed rather than surfaced, since it shouldn't block
-// anything else in the band
+// good way to get rate-limited. A failure here (e.g. a Development-Mode app whose account isn't
+// allow-listed for library scopes) doesn't block anything else in the band, but it does leave
+// `saved` at `null` — rendered as its own "❓" icon, not silently as "🤍", since those mean very
+// different things and used to be visually identical; `savedError` carries why, for the hint text
 async function refreshSavedIfTrackChanged($: any, options: any): Promise<void> {
   if (!auth || !nowPlaying.running || !nowPlaying.trackId) return;
   if (nowPlaying.trackId === lastSavedTrackId) return;
   lastSavedTrackId = nowPlaying.trackId;
   try {
     await refreshSavedStatus($, options);
-  } catch {
+  } catch (err: any) {
     saved = null;
+    savedError = err?.message ?? String(err);
   }
 }
 
@@ -330,15 +339,26 @@ async function toggleLike($: any, options: any): Promise<void> {
   // call every band action makes right after would treat this as an unseen track (if it's the
   // first time this session) and immediately re-fetch, clobbering what we just set back to stale
   lastSavedTrackId = id;
+  savedError = null;
 }
 
 async function loadPlaylists($: any, options: any): Promise<void> {
+  // Liked Songs isn't in /me/playlists at all (Spotify doesn't treat it as a playlist resource),
+  // so it's synthesized here from /me/tracks's own total, and always listed first
+  const likedTotal = await spotifyApi($, options, 'GET', '/me/tracks?limit=1')
+    .then((j: any) => (typeof j?.total === 'number' ? j.total : 0))
+    .catch(() => 0);
   const json = await spotifyApi($, options, 'GET', '/me/playlists?limit=50');
-  playlists = toPlaylists(json);
+  playlists = [{ id: LIKED_SONGS_ID, name: 'Liked Songs', trackCount: likedTotal }, ...toPlaylists(json)];
 }
 
 async function loadPlaylistTracks($: any, options: any, playlistId: string): Promise<void> {
   try {
+    if (playlistId === LIKED_SONGS_ID) {
+      const json = await spotifyApi($, options, 'GET', '/me/tracks?limit=50');
+      playlistTracks = toPlaylistTracks(json);
+      return;
+    }
     // `/tracks` is Spotify's now-deprecated path for this — it started returning 403 for every
     // request after Spotify's early-2026 API migration, even for a playlist you made yourself
     // and are properly authorized for. `/items` is the replacement.
@@ -346,14 +366,17 @@ async function loadPlaylistTracks($: any, options: any, playlistId: string): Pro
     playlistTracks = toPlaylistTracks(json);
   } catch (err: any) {
     const message = err?.message ?? String(err);
-    // if it's still 403 even on the current endpoint, it's one of two other causes: Spotify
-    // permanently blocks every third-party app from reading algorithmic/Spotify-owned playlists
-    // (Discover Weekly, Daily Mix, Release Radar, Liked Songs, a Blend, ...) since a Nov 2024
-    // policy change, or the account isn't allow-listed for a Development-Mode app
-    if (message.includes('403')) {
-      throw new Error(`${message}\n\nEither this is a Spotify-generated playlist (Discover Weekly, Daily Mix, Release Radar, Liked Songs, a Blend...) — blocked from every third-party app since Spotify's Nov 2024 API change, not fixable here — or your account still isn't allow-listed for this app (Users and Access in the dashboard). Try a playlist you made yourself to tell which one it is.`);
+    if (!message.includes('403')) throw err;
+    // if it's still 403 even on the current endpoint, it's one of two other causes for a
+    // regular playlist: Spotify permanently blocks every third-party app from reading
+    // algorithmic/Spotify-owned playlists (Discover Weekly, Daily Mix, Release Radar, a Blend,
+    // ...) since a Nov 2024 policy change, or the account isn't allow-listed for a
+    // Development-Mode app — the latter is the only possible cause for Liked Songs specifically,
+    // since it isn't a playlist and was never covered by that Nov 2024 block
+    if (playlistId === LIKED_SONGS_ID) {
+      throw new Error(`${message}\n\nYour account isn't allow-listed for this app's library scopes yet (Users and Access in the dashboard) — Liked Songs needs user-library-read.`);
     }
-    throw err;
+    throw new Error(`${message}\n\nEither this is a Spotify-generated playlist (Discover Weekly, Daily Mix, Release Radar, a Blend...) — blocked from every third-party app since Spotify's Nov 2024 API change, not fixable here — or your account still isn't allow-listed for this app (Users and Access in the dashboard). Try a playlist you made yourself to tell which one it is.`);
   }
 }
 
@@ -381,7 +404,18 @@ async function playTrack($: any, options: any, uri: string): Promise<void> {
 }
 
 async function playPlaylist($: any, options: any, playlistId: string, shuffle: boolean): Promise<void> {
+  if (playlistId === LIKED_SONGS_ID) {
+    // Liked Songs has no `context_uri` of its own (it isn't a playlist resource), so this plays
+    // the page of tracks already loaded for the sidebar directly, in order or shuffled here
+    if (!playlistTracks || playlistTracks.length === 0) {
+      throw new Error('open Liked Songs first so its tracks are loaded, then play');
+    }
+    const tracks = shuffle ? shuffled(playlistTracks) : playlistTracks;
+    await playOnDevice($, options, { uris: tracks.map(t => t.uri) });
+    return;
+  }
   if (shuffle) await spotifyApi($, options, 'PUT', '/me/player/shuffle?state=true').catch(() => {});
+  else await spotifyApi($, options, 'PUT', '/me/player/shuffle?state=false').catch(() => {});
   await playOnDevice($, options, { context_uri: `spotify:playlist:${playlistId}` });
 }
 
@@ -466,11 +500,18 @@ function renderBand($: any, e: any, options: any) {
           <Button key="next" label="⏭" onPress={afterAction(() => nextTrack($))} />
           <Button key="mute" label={np.volume > 0 ? '🔇' : '🔊'} onPress={afterAction(() => toggleMute($))} />
           {auth && (
-            <Button key="like" label={saved ? '💚' : '🤍'} onPress={afterAction(() => toggleLike($, options))} />
+            // "❓" is deliberately not the same glyph as "🤍" — `saved === null` means "don't
+            // know yet" (still checking, or the check itself keeps failing), not "not liked",
+            // and those used to be visually identical, which is exactly what made a stuck
+            // failure indistinguishable from an accurately-unliked song
+            <Button key="like" label={saved === true ? '💚' : saved === false ? '🤍' : '❓'} onPress={afterAction(() => toggleLike($, options))} />
           )}
         </Box>
         <Markdown text={`**${np.track || '(unknown track)'}**  ·  ${np.artist}${np.album ? ' · ' + np.album : ''}`} />
         <Text dimColor wrap="truncate-end">{`${formatTime(np.positionSec)}  ${progressBar(np.positionSec, np.durationMs, 16)}  ${formatTime(np.durationMs / 1000)}`}</Text>
+        {auth && saved === null && savedError && (
+          <Text dimColor wrap="truncate-end">{`like status unknown: ${savedError}`}</Text>
+        )}
       </Box>
     );
   }
@@ -545,6 +586,7 @@ function renderFullscreen($: any, e: any, options: any) {
               playlistTracks = null;
             })}
           />
+          <Button key="pane:play" label="▶" onPress={afterPaneAction(() => playPlaylist($, options, playlist.id, false))} />
           <Button key="pane:shuffle-play" label="🔀" onPress={afterPaneAction(() => playPlaylist($, options, playlist.id, true))} />
           <Markdown text={`**${playlist.name}**`} />
         </Box>

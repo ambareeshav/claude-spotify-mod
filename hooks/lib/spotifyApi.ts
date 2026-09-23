@@ -26,6 +26,18 @@ export function toPlaylists(json: any): Playlist[] {
 
 export type PlaylistTrack = { uri: string; name: string; artist: string };
 
+// Fisher-Yates, used for shuffle-playing Liked Songs — that has no `context_uri` of its own to
+// hand Spotify's own shuffle to (it isn't a playlist resource), so this mod does it client-side
+// over whatever page of tracks it has loaded.
+export function shuffled<T>(items: readonly T[]): T[] {
+  const copy = items.slice();
+  for (let i = copy.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [copy[i], copy[j]] = [copy[j], copy[i]];
+  }
+  return copy;
+}
+
 export function toPlaylistTracks(json: any): PlaylistTrack[] {
   const items = Array.isArray(json?.items) ? json.items : [];
   return items
