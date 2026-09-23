@@ -1,6 +1,6 @@
 # spotify
 
-Spotify controls above the prompt — the same `AbovePrompt` band tetris and pong draw in — via `/spotify`. Icon-only prev/play-pause/next/mute/like, and what's currently playing, with no setup at all beyond the local Spotify app. A `⛶` button opens a fullscreen sidebar for browsing and playing your playlists, which does need a one-time login.
+Skip a bad song without leaving the terminal. `/spotify` puts play/pause/skip/mute/like right above the prompt — no setup beyond having Spotify open — and a `⛶` opens your playlists in a proper sidebar once you've connected your account.
 
 ## Install
 
