@@ -17,9 +17,15 @@ export function tokenSetFrom(json: any, previousRefreshToken: string): TokenSet 
 
 export type Playlist = { id: string; name: string };
 
-export function toPlaylists(json: any): Playlist[] {
+// only playlists this account owns — a followed, collaborative-but-not-yours, or algorithmic
+// playlist (Discover Weekly, a Blend, ...) shows up in /me/playlists just like an owned one, but
+// its tracks always 403 now (Spotify's Feb 2026 API change, see register.tsx). Filtering here
+// means the sidebar only ever lists things it can actually open, instead of listing broken links.
+export function toPlaylists(json: any, ownerId: string): Playlist[] {
   const items = Array.isArray(json?.items) ? json.items : [];
-  return items.filter((p: any) => p && p.id).map((p: any) => ({ id: p.id, name: p.name ?? '(untitled)' }));
+  return items
+    .filter((p: any) => p && p.id && p.owner?.id === ownerId)
+    .map((p: any) => ({ id: p.id, name: p.name ?? '(untitled)' }));
 }
 
 export type PlaylistTrack = { uri: string; name: string; artist: string };

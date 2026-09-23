@@ -77,6 +77,7 @@ let paneError: string | null = null;
 let playlists: Playlist[] | null = null;
 let selectedPlaylist: Playlist | null = null;
 let playlistTracks: PlaylistTrack[] | null = null;
+let myUserId: string | null = null; // cached from /me, so loadPlaylists doesn't refetch it every time
 
 // most installs never set this — it's an optional escape hatch for someone who wants their own
 // Spotify Developer app instead of this mod's shared one (its own Development Mode allow-list, a
@@ -293,14 +294,24 @@ async function logout($: any): Promise<void> {
   playlists = null;
   selectedPlaylist = null;
   playlistTracks = null;
+  myUserId = null;
   await $.store.set(TOKEN_STORE_KEY, null).catch((err: any) => $.ui.log(`spotify: token store clear failed: ${err}`));
+}
+
+async function ensureMyUserId($: any, options: any): Promise<string> {
+  if (myUserId) return myUserId;
+  const json = await spotifyApi($, options, 'GET', '/me');
+  myUserId = json?.id;
+  if (!myUserId) throw new Error('Spotify: /me returned no account id');
+  return myUserId;
 }
 
 async function loadPlaylists($: any, options: any): Promise<void> {
   // Liked Songs isn't in /me/playlists at all (Spotify doesn't treat it as a playlist resource),
   // so it's synthesized here as its own entry, always listed first
+  const ownerId = await ensureMyUserId($, options);
   const json = await spotifyApi($, options, 'GET', '/me/playlists?limit=50');
-  playlists = [{ id: LIKED_SONGS_ID, name: 'Liked Songs' }, ...toPlaylists(json)];
+  playlists = [{ id: LIKED_SONGS_ID, name: 'Liked Songs' }, ...toPlaylists(json, ownerId)];
 }
 
 async function loadPlaylistTracks($: any, options: any, playlistId: string): Promise<void> {
@@ -318,15 +329,12 @@ async function loadPlaylistTracks($: any, options: any, playlistId: string): Pro
   } catch (err: any) {
     const message = err?.message ?? String(err);
     if (!message.includes('403')) throw err;
-    if (playlistId === LIKED_SONGS_ID) {
-      throw new Error(`${message}\n\nYour account isn't allow-listed for this app's library scopes yet (Users and Access in the dashboard) — Liked Songs needs user-library-read.`);
-    }
-    // as of a Feb 2026 Spotify API change, a playlist's tracks are only served to the account
-    // that owns it — a playlist you follow but didn't create (someone else's, a collaborative
-    // one you joined, an algorithmic one like Discover Weekly) always 403s here now, for any
-    // third-party app, not just this one. If a playlist you *did* create also 403s, that's the
-    // separate allow-listing issue instead — the two read identically here, so both get named.
-    throw new Error(`${message}\n\nSpotify only hands a playlist's tracks to the account that owns it — if you didn't create this playlist (followed, collaborative, Discover Weekly, etc.), this 403 is permanent and not fixable here. If you DID create it, your account probably isn't allow-listed for this app yet (Users and Access in the dashboard).`);
+    // the sidebar only ever lists playlists this account owns (see loadPlaylists) — a playlist
+    // you don't own always 403s here (Spotify's Feb 2026 API change) and is filtered out before
+    // it can even be selected, so a 403 on something that did show up in the list means the
+    // account itself isn't allow-listed for this app yet, not an ownership problem
+    const needs = playlistId === LIKED_SONGS_ID ? 'Liked Songs needs user-library-read' : 'playlists need playlist-read-private';
+    throw new Error(`${message}\n\nYour account isn't allow-listed for this app yet (Users and Access in the dashboard) — ${needs}.`);
   }
 }
 

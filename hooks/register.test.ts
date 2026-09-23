@@ -90,13 +90,21 @@ function installWebApiMocks(on: any, opts: { apiCalls?: string[]; bodies?: strin
         },
       };
     }
+    if (url.endsWith('/v1/me')) {
+      return { value: { status: 200, ok: true, headers: {}, text: JSON.stringify({ id: 'my-id' }) } };
+    }
     if (url.includes('/me/playlists')) {
       return {
         value: {
           status: 200,
           ok: true,
           headers: {},
-          text: JSON.stringify({ items: [{ id: 'pl1', name: 'Focus', tracks: { total: 2 } }] }),
+          text: JSON.stringify({
+            items: [
+              { id: 'pl1', name: 'Focus', owner: { id: 'my-id' } },
+              { id: 'pl2', name: 'Friend\'s Mix', owner: { id: 'someone-else' } },
+            ],
+          }),
         },
       };
     }
@@ -316,6 +324,7 @@ test('once connected, the sidebar lists playlists (names only, no track count, n
   expect(await pane.find({ text: /Focus/ })).toBeDefined();
   expect(await pane.find({ text: /Focus \(\d/ })).toBeUndefined(); // no track count next to the name
   expect(await pane.find({ text: /🤍|💚|⏸/ })).toBeUndefined(); // no player controls in the sidebar anymore
+  expect(await pane.find({ text: /Friend/ })).toBeUndefined(); // owned by someone else — filtered out entirely
 
   await pane.press({ key: 'playlist:pl1' });
   expect(await pane.find({ text: /Song A/ })).toBeDefined();
@@ -363,8 +372,11 @@ test('a failed track load shows an error inline without hiding the back button',
   installStoreMocks(on, { initialToken: { accessToken: 'access-1', refreshToken: 'refresh-1', expiresAt: Date.now() + 60 * 60 * 1000 } });
   on('http.fetch', async ($: any, e: any) => {
     const url = e.url as string;
+    if (url.endsWith('/v1/me')) {
+      return { value: { status: 200, ok: true, headers: {}, text: JSON.stringify({ id: 'my-id' }) } };
+    }
     if (url.includes('/me/playlists')) {
-      return { value: { status: 200, ok: true, headers: {}, text: JSON.stringify({ items: [{ id: 'pl1', name: 'Focus', tracks: { total: 2 } }] }) } };
+      return { value: { status: 200, ok: true, headers: {}, text: JSON.stringify({ items: [{ id: 'pl1', name: 'Focus', owner: { id: 'my-id' } }] }) } };
     }
     if (url.includes('/playlists/pl1/items')) {
       return { value: { status: 403, ok: false, headers: {}, text: '{"error":{"status":403,"message":"Forbidden"}}' } };
@@ -381,7 +393,6 @@ test('a failed track load shows an error inline without hiding the back button',
   await pane.press({ key: 'playlist:pl1' });
 
   expect(await pane.find({ text: /403/ })).toBeDefined();
-  expect(await pane.find({ text: /owns it/ })).toBeDefined();
   expect(await pane.find({ text: /allow-listed/ })).toBeDefined();
   // the whole point of the fix: the back button is still there and still works
   expect(await pane.find({ text: '‹' })).toBeDefined();
