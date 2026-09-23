@@ -66,6 +66,7 @@ end if
 `;
 
 let open = false;
+let compact = false; // one line instead of three, while something's playing — see renderBand
 let nowPlaying: NowPlaying = { running: false };
 let lastVolume = 70;
 let errorMessage: string | null = null;
@@ -410,13 +411,24 @@ function renderBand($: any, e: any, options: any) {
     $.ui.invalidate('ui.render');
   };
 
-  // no `plain`: the default bracket chrome (`[ X ]`) gives every icon the same drawn width and
-  // real spacing around it, instead of bare glyphs of wildly different visual widths butted
-  // together — a wider row gap (2, not 1) adds breathing room between the brackets too
-  const closeButton = <Button key="spotify:close" label="✕" onPress={close} />;
+  const toggleCompact = () => {
+    compact = !compact;
+    $.ui.invalidate('ui.render');
+  };
+
+  // close is `plain` — just a padded glyph, no bracket chrome — since it's the one button that
+  // never needs the extra visual weight of a `[ X ]`; every other icon button below keeps the
+  // default bracket chrome, which gives them a uniform drawn width and real spacing around each
+  // (a wider row gap, 2 not 1, adds breathing room between the brackets too)
+  const closeButton = <Button key="spotify:close" plain label=" ✕ " onPress={close} />;
+  // ◫ reads as a sidebar layout (a pane split off from the main area), closer to what this
+  // button actually opens than ⛶'s generic "fullscreen" implication
   const fullButton = (
-    <Button key="spotify:full" label="⛶" onPress={() => openFullscreen($, options).catch((err: any) => $.ui.log(`spotify: ${err}`))} />
+    <Button key="spotify:full" label="◫" onPress={() => openFullscreen($, options).catch((err: any) => $.ui.log(`spotify: ${err}`))} />
   );
+  // a chevron pair (not two unrelated glyphs) so the button visibly toggles between the same two
+  // states — ⌄ "collapse this" while expanded, ⌃ "expand this" while compact
+  const compactButton = <Button key="spotify:compact" label={compact ? '⌃' : '⌄'} onPress={toggleCompact} />;
   // a zero-size clock: its own timer posts a tick every second so the position/bar keep
   // moving without needing a button press, even though the hooks module has no timer of its own
   const ticker = <Client key="spotify:ticker" module="./boards/ticker.tsx" width={0} height={0} />;
@@ -428,6 +440,7 @@ function renderBand($: any, e: any, options: any) {
         <Box flexDirection="row" columnGap={2}>
           {closeButton}
           {fullButton}
+          {compactButton}
           <Button key="retry" label="↻" onPress={afterAction(async () => {})} />
         </Box>
         <Markdown text={`**Spotify mod error**\n\n${errorMessage}`} />
@@ -439,6 +452,7 @@ function renderBand($: any, e: any, options: any) {
         <Box flexDirection="row" columnGap={2}>
           {closeButton}
           {fullButton}
+          {compactButton}
           <Button key="open" label="open Spotify" onPress={afterAction(() => openSpotify($))} />
           <Button key="refresh" label="↻" onPress={afterAction(async () => {})} />
         </Box>
@@ -447,15 +461,37 @@ function renderBand($: any, e: any, options: any) {
     );
   } else {
     const np = nowPlaying;
-    content = (
+    // 🔈/🔇 — a plain speaker, not 🔊's three sound waves — sits closer in visual weight to the
+    // thin ⏮/⏸/⏭ transport glyphs than the louder, busier icon did
+    const muteButton = (
+      <Button key="mute" label={np.volume > 0 ? '🔇' : '🔈'} onPress={afterAction(() => toggleMute($))} />
+    );
+    const trackLine = `${np.track || '(unknown track)'} — ${np.artist}`;
+    const timeLine = `${formatTime(np.positionSec)}/${formatTime(np.durationMs / 1000)}`;
+    content = compact ? (
+      <Box flexDirection="row" columnGap={2}>
+        {closeButton}
+        {fullButton}
+        {compactButton}
+        <Button key="prev" label="⏮" onPress={afterAction(() => previousTrack($))} />
+        <Button key="playpause" label={np.state === 'playing' ? '⏸' : '▶'} onPress={afterAction(() => playPause($))} />
+        <Button key="next" label="⏭" onPress={afterAction(() => nextTrack($))} />
+        {muteButton}
+        <Text dimColor>│</Text>
+        <Text wrap="truncate-end">{trackLine}</Text>
+        <Text dimColor>│</Text>
+        <Text dimColor>{timeLine}</Text>
+      </Box>
+    ) : (
       <Box flexDirection="column">
         <Box flexDirection="row" columnGap={2}>
           {closeButton}
           {fullButton}
+          {compactButton}
           <Button key="prev" label="⏮" onPress={afterAction(() => previousTrack($))} />
           <Button key="playpause" label={np.state === 'playing' ? '⏸' : '▶'} onPress={afterAction(() => playPause($))} />
           <Button key="next" label="⏭" onPress={afterAction(() => nextTrack($))} />
-          <Button key="mute" label={np.volume > 0 ? '🔇' : '🔊'} onPress={afterAction(() => toggleMute($))} />
+          {muteButton}
         </Box>
         <Markdown text={`**${np.track || '(unknown track)'}**  ·  ${np.artist}${np.album ? ' · ' + np.album : ''}`} />
         <Text dimColor wrap="truncate-end">{`${formatTime(np.positionSec)}  ${progressBar(np.positionSec, np.durationMs, 16)}  ${formatTime(np.durationMs / 1000)}`}</Text>
@@ -463,8 +499,10 @@ function renderBand($: any, e: any, options: any) {
     );
   }
 
+  // compact mode trades the fixed narrow width for one wide row on purpose — that's the whole
+  // point of asking for one line instead of three, so only the stacked layout stays capped
   return (
-    <Box flexDirection="column" width={WIDTH}>
+    <Box flexDirection="column" width={compact && nowPlaying.running && !errorMessage ? undefined : WIDTH}>
       {ticker}
       {content}
     </Box>

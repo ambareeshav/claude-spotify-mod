@@ -1,6 +1,6 @@
 # spotify
 
-Skip a bad song without leaving the terminal. `/spotify` puts play/pause/skip/mute right above the prompt — no setup beyond having Spotify open — and a `⛶` opens your playlists in a proper sidebar once you've connected your account.
+Skip a bad song without leaving the terminal. `/spotify` puts play/pause/skip/mute right above the prompt — no setup beyond having Spotify open — and a `◫` opens your playlists in a proper sidebar once you've connected your account.
 
 ## Install
 
@@ -14,9 +14,10 @@ Restart Claude Code (a full quit/relaunch) and `/spotify` is available.
 ## Play
 
 1. `/spotify` opens the band (`/spotify stop` closes it).
-2. Buttons, icons only: `✕` close, `⛶` fullscreen, `⏮` prev, `▶`/`⏸` play/pause, `⏭` next, `🔇`/`🔊` mute/unmute. Track/artist/album and a position bar are shown below them, ticking on their own once a second.
-3. If Spotify isn't open, the band offers an `open Spotify` button instead of controls.
-4. `⛶` opens a sidebar (`Pane`) — playlists only, no player (the band already has one): a **Playlists** list (with **Liked Songs** always listed first, then playlists you created yourself — followed and other-owned playlists don't show up here, see below), and inside one, its tracks to play individually, `▶` play the whole thing in order, or `🔀` shuffle-play it. `‹` goes back to the list.
+2. Buttons, icons only: `✕` close, `◫` sidebar, `⌄`/`⌃` collapse/expand, `⏮` prev, `▶`/`⏸` play/pause, `⏭` next, `🔇`/`🔈` mute/unmute. Track/artist/album and a position bar are shown below them, ticking on their own once a second.
+3. `⌄` collapses the band to one line — buttons, then `│ track — artist │ 1:23/4:56` — for when three rows is more than you want to spare; `⌃` expands it back.
+4. If Spotify isn't open, the band offers an `open Spotify` button instead of controls.
+5. `◫` opens a sidebar (`Pane`) — playlists only, no player (the band already has one): a **Playlists** list (with **Liked Songs** always listed first, then playlists you created yourself — followed and other-owned playlists don't show up here, see below), and inside one, its tracks to play individually, `▶` play the whole thing in order, or `🔀` shuffle-play it. `‹` goes back to the list.
 
 ## Connecting the sidebar (optional, for playlist browsing)
 
@@ -41,6 +42,7 @@ No client secret is stored or needed (PKCE), and neither is the shared Client ID
   - It's narrow (icon-only buttons need far less room than labeled ones) and draws in a row with `{await next(e)}` — the same `AbovePrompt` site other mods (tetris, pong) use, so it can sit beside whatever else draws there instead of hiding it.
   - A zero-size `Client` (`boards/ticker.tsx`) is mounted purely for its drawing-thread timer: it posts a tick once a second, which the hooks module answers by re-running the AppleScript query and invalidating the render. That's what keeps the position/progress bar moving without a button press — the hooks module has no timer of its own, only a `Client`'s `surface.every` does.
   - Mute remembers the volume it muted from (in memory, for this session) so unmute restores it instead of guessing.
+  - Collapsed (`⌄`/`⌃`) mode drops the fixed narrow column width and lets the row size to its content instead — the whole point of asking for one wide line rather than three narrow ones.
 - **The sidebar** is playlists only — no now-playing card, no transport controls, since the band already owns those. It talks to the real **Spotify Web API**, authenticated via OAuth's Authorization Code + PKCE flow — no client secret, since PKCE's whole point is not needing one for a public/desktop client.
   - Login spawns a short-lived local Python HTTP server (`python3`, backgrounded via `nohup ... & disown` so the spawning call returns immediately) on `127.0.0.1:8907` to catch the OAuth redirect — `$.process.run` itself only runs one-shot commands that it waits on, not long-lived listeners, so the listener has to be launched detached from it. It writes what it catches to a state-scoped file, and the same `Client` ticker that drives the band's progress bar also polls for that file once a second while a login is pending, completing it automatically. If the listener can't start (no `python3`, the port's taken) or the redirect never reaches it, the sidebar's paste-the-URL `Input` is still there as a fallback — the loopback redirect URI needs no real listener either way, since the code lands in the browser's address bar regardless of whether anything answers it.
   - `/spotify logout` clears the stored tokens and all sidebar state, for testing the connect flow again from scratch.

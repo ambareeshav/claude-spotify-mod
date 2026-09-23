@@ -167,7 +167,7 @@ test('every control button is present and pressable, not clipped out of the row'
   await $.command.run({ command: 'spotify', args: '' });
   const ui = await $.ui.mount({ plugin: 'spotify', surface: 'terminal', component: 'AbovePrompt', requestId: 'spotify', props: BAND_PROPS });
 
-  for (const text of [/✕/, /⛶/, /⏮/, /⏸/, /⏭/, /🔇/]) {
+  for (const text of [/✕/, /◫/, /⌄/, /⏮/, /⏸/, /⏭/, /🔇/]) {
     expect(await ui.find({ text })).toBeDefined();
   }
 
@@ -203,6 +203,31 @@ test('pressing play-pause runs playpause and refreshes the band', async ($: any,
   await ui.press({ key: 'playpause' });
   expect(calls.some(s => s.includes('playpause'))).toBe(true);
   expect(await ui.find({ text: /Midnight City/ })).toBeDefined();
+
+  await ui.unmount();
+});
+
+test('the compact toggle collapses the band to one line, and back', async ($: any, on: any) => {
+  register(on, {});
+  installMocks(on);
+
+  await $.command.run({ command: 'spotify', args: '' });
+  const ui = await $.ui.mount({ plugin: 'spotify', surface: 'terminal', component: 'AbovePrompt', requestId: 'spotify', props: BAND_PROPS });
+
+  // expanded: the full three-line layout, "collapse" (⌄) offered
+  expect(await ui.find({ text: /Midnight City/ })).toBeDefined();
+  expect(await ui.find({ text: '⌄' })).toBeDefined();
+
+  await ui.press({ key: 'spotify:compact' });
+
+  // collapsed: everything on one row, separated by │, "expand" (⌃) offered now
+  expect(await ui.find({ text: /Midnight City — M83/ })).toBeDefined();
+  expect(await ui.find({ text: /1:01\/4:03/ })).toBeDefined();
+  expect(await ui.find({ text: '⌃' })).toBeDefined();
+  expect(await ui.find({ text: '⌄' })).toBeUndefined();
+
+  await ui.press({ key: 'spotify:compact' });
+  expect(await ui.find({ text: '⌄' })).toBeDefined();
 
   await ui.unmount();
 });
