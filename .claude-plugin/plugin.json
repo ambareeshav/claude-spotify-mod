@@ -1,6 +1,6 @@
 {
   "name": "spotify",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "description": "Icon-only Spotify controls above the prompt (prev/play-pause/next/mute/like, AppleScript, no login) with a fullscreen sidebar for browsing/playing your playlists (Spotify Web API, one-time login).",
   "author": {
     "name": "Ambareesha Vittal"

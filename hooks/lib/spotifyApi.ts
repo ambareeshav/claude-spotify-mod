@@ -29,7 +29,9 @@ export type PlaylistTrack = { uri: string; name: string; artist: string };
 export function toPlaylistTracks(json: any): PlaylistTrack[] {
   const items = Array.isArray(json?.items) ? json.items : [];
   return items
-    .map((it: any) => it.track)
+    // `item` is the current field (a TrackObject or EpisodeObject); `track` is Spotify's own
+    // deprecated alias for the same thing, kept here only as a fallback for an older response
+    .map((it: any) => it.item ?? it.track)
     .filter((t: any) => t && t.uri)
     .map((t: any) => ({
       uri: t.uri,

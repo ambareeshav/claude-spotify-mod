@@ -277,16 +277,17 @@ async function loadPlaylists($: any, options: any): Promise<void> {
 
 async function loadPlaylistTracks($: any, options: any, playlistId: string): Promise<void> {
   try {
-    const json = await spotifyApi($, options, 'GET', `/playlists/${playlistId}/tracks?limit=50`);
+    // `/tracks` is Spotify's now-deprecated path for this — it started returning 403 for every
+    // request after Spotify's early-2026 API migration, even for a playlist you made yourself
+    // and are properly authorized for. `/items` is the replacement.
+    const json = await spotifyApi($, options, 'GET', `/playlists/${playlistId}/items?limit=50`);
     playlistTracks = toPlaylistTracks(json);
   } catch (err: any) {
     const message = err?.message ?? String(err);
-    // a 403 here is ambiguous on Spotify's side between two different causes with two
-    // different fixes, so name both rather than guess: since Nov 2024 Spotify blocks every
-    // third-party app from reading algorithmic/owned-by-Spotify playlists (Discover Weekly,
-    // Daily Mix, Release Radar, Liked Songs, a Blend, ...) — no app can read those, ever; a
-    // Development-Mode app whose account isn't allow-listed gets the same status for every
-    // playlist instead
+    // if it's still 403 even on the current endpoint, it's one of two other causes: Spotify
+    // permanently blocks every third-party app from reading algorithmic/Spotify-owned playlists
+    // (Discover Weekly, Daily Mix, Release Radar, Liked Songs, a Blend, ...) since a Nov 2024
+    // policy change, or the account isn't allow-listed for a Development-Mode app
     if (message.includes('403')) {
       throw new Error(`${message}\n\nEither this is a Spotify-generated playlist (Discover Weekly, Daily Mix, Release Radar, Liked Songs, a Blend...) — blocked from every third-party app since Spotify's Nov 2024 API change, not fixable here — or your account still isn't allow-listed for this app (Users and Access in the dashboard). Try a playlist you made yourself to tell which one it is.`);
     }

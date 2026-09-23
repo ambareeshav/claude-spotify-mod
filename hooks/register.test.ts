@@ -94,14 +94,15 @@ function installWebApiMocks(on: any, opts: { apiCalls?: string[] } = {}) {
         },
       };
     }
-    if (url.includes('/playlists/pl1/tracks')) {
+    if (url.includes('/playlists/pl1/items')) {
       return {
         value: {
           status: 200,
           ok: true,
           headers: {},
           text: JSON.stringify({
-            items: [{ track: { uri: 'spotify:track:aaa', name: 'Song A', artists: [{ name: 'Artist A' }] } }],
+            // `item`, not the deprecated `track` field — this is the current shape
+            items: [{ item: { uri: 'spotify:track:aaa', name: 'Song A', artists: [{ name: 'Artist A' }] } }],
           }),
         },
       };
@@ -286,7 +287,7 @@ test('a failed track load shows an error inline without hiding the back button',
     if (url.includes('/me/playlists')) {
       return { value: { status: 200, ok: true, headers: {}, text: JSON.stringify({ items: [{ id: 'pl1', name: 'Focus', tracks: { total: 2 } }] }) } };
     }
-    if (url.includes('/playlists/pl1/tracks')) {
+    if (url.includes('/playlists/pl1/items')) {
       return { value: { status: 403, ok: false, headers: {}, text: '{"error":{"status":403,"message":"Forbidden"}}' } };
     }
     return { value: { status: 404, ok: false, headers: {}, text: `unmocked url: ${url}` } };

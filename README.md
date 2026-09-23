@@ -43,6 +43,7 @@ No client secret is stored or needed (PKCE), and no local server ever actually l
   - The "paste the redirect URL back" step exists because nothing in this mod can run a persistent local HTTP server to catch the OAuth redirect automatically — `$.process.run` runs one-shot commands, not long-lived listeners. A loopback redirect URI needs no real listener, though: the code is in the browser's address bar regardless of whether anything answers it.
   - Tokens (access + refresh) persist in `$.store` across sessions; the access token silently refreshes on expiry (or on a 401), once per call, before failing for real.
   - A failed request (a 403 from a Spotify Development-Mode app whose account isn't allow-listed, a flaky connection, whatever) shows as a small dismissible banner, not a screen that replaces the whole sidebar — navigating back and retrying always stays available. An earlier version let one failed request (checking "is this liked") hide the entire playlists list and its back button; this is the fix.
+  - Playlist tracks come from `/playlists/{id}/items`, not `/playlists/{id}/tracks` — Spotify deprecated the latter in an early-2026 API migration, and it now returns 403 for every request, even a playlist you made yourself and are properly authorized for. The response's per-item field also renamed (`track` → `item`); this mod reads `item` and falls back to `track` only for safety.
 
 ## Requirements
 
