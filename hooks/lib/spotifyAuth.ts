@@ -21,8 +21,7 @@ export const SCOPES = [
   'user-read-currently-playing',
   'playlist-read-private',
   'playlist-read-collaborative',
-  'user-library-read',
-  'user-library-modify',
+  'user-library-read', // Liked Songs — reading only, there's no "like" button anymore
 ].join(' ');
 
 function base64url(bytes: Uint8Array): string {

@@ -113,12 +113,6 @@ function installWebApiMocks(on: any, opts: { apiCalls?: string[]; bodies?: strin
         },
       };
     }
-    if (url.includes('/me/tracks/contains')) {
-      return { value: { status: 200, ok: true, headers: {}, text: JSON.stringify([false]) } };
-    }
-    if (url.includes('/me/tracks?limit=1')) {
-      return { value: { status: 200, ok: true, headers: {}, text: JSON.stringify({ total: 1 }) } };
-    }
     if (url.includes('/me/tracks?limit=50')) {
       return {
         value: {
@@ -128,10 +122,6 @@ function installWebApiMocks(on: any, opts: { apiCalls?: string[]; bodies?: strin
           text: JSON.stringify({ items: [{ track: { uri: 'spotify:track:bbb', name: 'Song B', artists: [{ name: 'Artist B' }] } }] }),
         },
       };
-    }
-    if (url.includes('/me/tracks')) {
-      // PUT to like, DELETE to unlike — Spotify answers both with an empty 200
-      return { value: { status: 200, ok: true, headers: {}, text: '' } };
     }
     if (url.includes('/me/player/play')) {
       return { value: { status: 204, ok: true, headers: {}, text: '' } };
@@ -225,31 +215,6 @@ test('the ticker client posts a tick every second, refreshing the position witho
   await ui.unmount();
 });
 
-test('a persistently failing saved-status check shows "don\'t know" (not "not liked") with why, not silence', async ($: any, on: any) => {
-  register(on, { clientId: 'test-client-id' });
-  installMocks(on);
-  installStoreMocks(on, { initialToken: { accessToken: 'access-1', refreshToken: 'refresh-1', expiresAt: Date.now() + 60 * 60 * 1000 } });
-  on('http.fetch', async ($: any, e: any) => {
-    const url = e.url as string;
-    if (url.includes('/me/tracks/contains')) {
-      return { value: { status: 403, ok: false, headers: {}, text: '{"error":{"status":403,"message":"Forbidden"}}' } };
-    }
-    return { value: { status: 404, ok: false, headers: {}, text: `unmocked url: ${url}` } };
-  });
-
-  await $.command.run({ command: 'spotify', args: '' });
-  const band = await $.ui.mount({ plugin: 'spotify', surface: 'terminal', component: 'AbovePrompt', requestId: 'spotify', props: BAND_PROPS });
-  await band.press({ key: 'spotify:full' });
-  await band.advance(1000); // the check runs now that auth is loaded, and fails
-
-  expect(await band.find({ text: '❓' })).toBeDefined();
-  expect(await band.find({ text: /🤍|💚/ })).toBeUndefined(); // never falls back to looking like a real answer
-  expect(await band.find({ text: /like status unknown/ })).toBeDefined();
-  expect(await band.find({ text: /403/ })).toBeDefined();
-
-  await band.unmount();
-});
-
 test('with no Client ID configured, connecting falls back to the shared app instead of failing', async ($: any, on: any) => {
   // `register(on, {})` here really does mean "nobody set a Client ID" — the test harness
   // always resolves userConfig to its manifest defaults regardless of what's passed to
@@ -320,34 +285,22 @@ test('connecting spawns a backgrounded local listener, and the tick picks up the
   await pane.unmount();
 });
 
-test('once connected, the like button shows up in the band (not the sidebar) and toggles', async ($: any, on: any) => {
+test('once connected, there is no like button in the band', async ($: any, on: any) => {
   register(on, { clientId: 'test-client-id' });
   installMocks(on);
   installStoreMocks(on, { initialToken: { accessToken: 'access-1', refreshToken: 'refresh-1', expiresAt: Date.now() + 60 * 60 * 1000 } });
-  const apiCalls: string[] = [];
-  installWebApiMocks(on, { apiCalls });
+  installWebApiMocks(on);
 
   await $.command.run({ command: 'spotify', args: '' });
   const band = await $.ui.mount({ plugin: 'spotify', surface: 'terminal', component: 'AbovePrompt', requestId: 'spotify', props: BAND_PROPS });
-  // loads `auth` from the store — the band itself never calls loadAuth on its own, only
-  // session.start and opening the sidebar do
-  await band.press({ key: 'spotify:full' });
-  // before the first saved-status check resolves (auth was still null when the band's own
-  // tick ran it once already), the icon is "don't know yet", not "not liked" — those are
-  // different things and used to render identically; the next tick (now with auth loaded)
-  // resolves it for real
-  expect(await band.find({ text: '❓' })).toBeDefined();
-  await band.advance(1000);
+  await band.press({ key: 'spotify:full' }); // loads `auth` from the store
 
-  expect(await band.find({ text: /🤍/ })).toBeDefined();
-  await band.press({ key: 'like' });
-  expect(apiCalls.some(c => c.startsWith('PUT https://api.spotify.com/v1/me/tracks'))).toBe(true);
-  expect(await band.find({ text: /💚/ })).toBeDefined();
+  expect(await band.find({ text: /🤍|💚|❓/ })).toBeUndefined();
 
   await band.unmount();
 });
 
-test('once connected, the sidebar lists playlists (with real track counts, no player) and plays a track from one', async ($: any, on: any) => {
+test('once connected, the sidebar lists playlists (names only, no track count, no player) and plays a track from one', async ($: any, on: any) => {
   register(on, { clientId: 'test-client-id' });
   installMocks(on);
   installStoreMocks(on, { initialToken: { accessToken: 'access-1', refreshToken: 'refresh-1', expiresAt: Date.now() + 60 * 60 * 1000 } });
@@ -360,8 +313,9 @@ test('once connected, the sidebar lists playlists (with real track counts, no pl
   await band.unmount();
 
   const pane = await $.ui.mount({ plugin: 'spotify', surface: 'terminal', component: 'Pane', requestId: 'spotify-full', props: PANE_PROPS });
-  expect(await pane.find({ text: /Focus \(2\)/ })).toBeDefined(); // the real track count, not "(0)"
-  expect(await pane.find({ text: /🤍|💚|⏸|▶/ })).toBeUndefined(); // no player controls in the sidebar anymore
+  expect(await pane.find({ text: /Focus/ })).toBeDefined();
+  expect(await pane.find({ text: /Focus \(\d/ })).toBeUndefined(); // no track count next to the name
+  expect(await pane.find({ text: /🤍|💚|⏸/ })).toBeUndefined(); // no player controls in the sidebar anymore
 
   await pane.press({ key: 'playlist:pl1' });
   expect(await pane.find({ text: /Song A/ })).toBeDefined();
@@ -386,7 +340,7 @@ test('Liked Songs shows up as a synthetic playlist and plays in order or shuffle
   await band.unmount();
 
   const pane = await $.ui.mount({ plugin: 'spotify', surface: 'terminal', component: 'Pane', requestId: 'spotify-full', props: PANE_PROPS });
-  expect(await pane.find({ text: /Liked Songs \(1\)/ })).toBeDefined(); // synthesized from /me/tracks's own total
+  expect(await pane.find({ text: 'Liked Songs' })).toBeDefined(); // synthesized, always listed first
 
   await pane.press({ key: 'playlist:__liked__' });
   expect(await pane.find({ text: /Song B/ })).toBeDefined();
@@ -427,7 +381,7 @@ test('a failed track load shows an error inline without hiding the back button',
   await pane.press({ key: 'playlist:pl1' });
 
   expect(await pane.find({ text: /403/ })).toBeDefined();
-  expect(await pane.find({ text: /Spotify-generated playlist/ })).toBeDefined();
+  expect(await pane.find({ text: /owns it/ })).toBeDefined();
   expect(await pane.find({ text: /allow-listed/ })).toBeDefined();
   // the whole point of the fix: the back button is still there and still works
   expect(await pane.find({ text: '‹' })).toBeDefined();

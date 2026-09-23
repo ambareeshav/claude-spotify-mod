@@ -17,10 +17,9 @@ import { shuffled, tokenSetFrom, toPlaylists, toPlaylistTracks, type Playlist, t
 
 // Spotify controls above the prompt (the same band tetris and pong draw in), plus a fullscreen
 // sidebar for the things AppleScript can't do at all: browsing/playing playlists. The band talks
-// to the local Spotify desktop app via `osascript` — no login, macOS only, and it also carries
-// "like" once connected, since liking needs the Web API regardless of which surface asks for it.
+// to the local Spotify desktop app via `osascript` — no login, macOS only.
 // The sidebar talks to the real Spotify Web API — needs a one-time OAuth login (PKCE, no client
-// secret, no locally-run server: the redirect URL's `code` is copied back by hand).
+// secret), auto-completed by a short-lived local listener rather than a copy-paste.
 
 const PANE_ID = 'spotify-full';
 const TOKEN_STORE_KEY = 'spotify:tokens';
@@ -29,9 +28,9 @@ const TOKEN_STORE_KEY = 'spotify:tokens';
 // tracks endpoint) to make it browsable/playable the same way as any other playlist
 const LIKED_SONGS_ID = '__liked__';
 
-// wide enough for the fullest row — close, full, prev, play/pause, next, mute, like, each
-// bracketed (`[ X ]`) and gapped — without clipping the trailing ones out of the clickable area
-const WIDTH = 60;
+// wide enough for the fullest row — close, full, prev, play/pause, next, mute, each bracketed
+// (`[ X ]`) and gapped — without clipping the trailing ones out of the clickable area
+const WIDTH = 52;
 
 // the fields the AppleScript prints, joined by FIELD_SEP, in this order.
 // `playerState`, not `st` — Spotify's own scripting dictionary reserves `st` and refuses to
@@ -75,9 +74,6 @@ let auth: TokenSet | null = null;
 let pendingLogin: { verifier: string; state: string } | null = null;
 let loginError: string | null = null;
 let paneError: string | null = null;
-let saved: boolean | null = null; // null: not checked yet, or the check itself failed — see savedError
-let savedError: string | null = null;
-let lastSavedTrackId: string | null = null;
 let playlists: Playlist[] | null = null;
 let selectedPlaylist: Playlist | null = null;
 let playlistTracks: PlaylistTrack[] | null = null;
@@ -294,70 +290,17 @@ async function logout($: any): Promise<void> {
   pendingLogin = null;
   loginError = null;
   paneError = null;
-  saved = null;
-  savedError = null;
-  lastSavedTrackId = null;
   playlists = null;
   selectedPlaylist = null;
   playlistTracks = null;
   await $.store.set(TOKEN_STORE_KEY, null).catch((err: any) => $.ui.log(`spotify: token store clear failed: ${err}`));
 }
 
-async function refreshSavedStatus($: any, options: any): Promise<void> {
-  if (!nowPlaying.running || !nowPlaying.trackId) {
-    saved = null;
-    return;
-  }
-  const json = await spotifyApi($, options, 'GET', `/me/tracks/contains?ids=${nowPlaying.trackId}`);
-  saved = Array.isArray(json) ? !!json[0] : null;
-  savedError = null;
-}
-
-// only re-checks when the track actually changed, so this never fires more than once per song —
-// the band ticks every second and calling the Web API that often would be both wasteful and a
-// good way to get rate-limited. A failure here (e.g. a Development-Mode app whose account isn't
-// allow-listed for library scopes) doesn't block anything else in the band, but it does leave
-// `saved` at `null` — rendered as its own "❓" icon, not silently as "🤍", since those mean very
-// different things and used to be visually identical; `savedError` carries why, for the hint text
-async function refreshSavedIfTrackChanged($: any, options: any): Promise<void> {
-  if (!auth || !nowPlaying.running || !nowPlaying.trackId) return;
-  if (nowPlaying.trackId === lastSavedTrackId) return;
-  lastSavedTrackId = nowPlaying.trackId;
-  try {
-    await refreshSavedStatus($, options);
-  } catch (err: any) {
-    saved = null;
-    // the query string (a full track id) eats width for nothing useful in a one-line hint —
-    // the status code and endpoint name are what actually explain the failure
-    savedError = (err?.message ?? String(err)).replace(/\?\S+/, '');
-  }
-}
-
-async function toggleLike($: any, options: any): Promise<void> {
-  if (!nowPlaying.running || !nowPlaying.trackId) return;
-  const id = nowPlaying.trackId;
-  if (saved) {
-    await spotifyApi($, options, 'DELETE', `/me/tracks?ids=${id}`);
-    saved = false;
-  } else {
-    await spotifyApi($, options, 'PUT', `/me/tracks?ids=${id}`);
-    saved = true;
-  }
-  // we just set the authoritative state ourselves — without this, the refreshSavedIfTrackChanged
-  // call every band action makes right after would treat this as an unseen track (if it's the
-  // first time this session) and immediately re-fetch, clobbering what we just set back to stale
-  lastSavedTrackId = id;
-  savedError = null;
-}
-
 async function loadPlaylists($: any, options: any): Promise<void> {
   // Liked Songs isn't in /me/playlists at all (Spotify doesn't treat it as a playlist resource),
-  // so it's synthesized here from /me/tracks's own total, and always listed first
-  const likedTotal = await spotifyApi($, options, 'GET', '/me/tracks?limit=1')
-    .then((j: any) => (typeof j?.total === 'number' ? j.total : 0))
-    .catch(() => 0);
+  // so it's synthesized here as its own entry, always listed first
   const json = await spotifyApi($, options, 'GET', '/me/playlists?limit=50');
-  playlists = [{ id: LIKED_SONGS_ID, name: 'Liked Songs', trackCount: likedTotal }, ...toPlaylists(json)];
+  playlists = [{ id: LIKED_SONGS_ID, name: 'Liked Songs' }, ...toPlaylists(json)];
 }
 
 async function loadPlaylistTracks($: any, options: any, playlistId: string): Promise<void> {
@@ -375,16 +318,15 @@ async function loadPlaylistTracks($: any, options: any, playlistId: string): Pro
   } catch (err: any) {
     const message = err?.message ?? String(err);
     if (!message.includes('403')) throw err;
-    // if it's still 403 even on the current endpoint, it's one of two other causes for a
-    // regular playlist: Spotify permanently blocks every third-party app from reading
-    // algorithmic/Spotify-owned playlists (Discover Weekly, Daily Mix, Release Radar, a Blend,
-    // ...) since a Nov 2024 policy change, or the account isn't allow-listed for a
-    // Development-Mode app — the latter is the only possible cause for Liked Songs specifically,
-    // since it isn't a playlist and was never covered by that Nov 2024 block
     if (playlistId === LIKED_SONGS_ID) {
       throw new Error(`${message}\n\nYour account isn't allow-listed for this app's library scopes yet (Users and Access in the dashboard) — Liked Songs needs user-library-read.`);
     }
-    throw new Error(`${message}\n\nEither this is a Spotify-generated playlist (Discover Weekly, Daily Mix, Release Radar, a Blend...) — blocked from every third-party app since Spotify's Nov 2024 API change, not fixable here — or your account still isn't allow-listed for this app (Users and Access in the dashboard). Try a playlist you made yourself to tell which one it is.`);
+    // as of a Feb 2026 Spotify API change, a playlist's tracks are only served to the account
+    // that owns it — a playlist you follow but didn't create (someone else's, a collaborative
+    // one you joined, an algorithmic one like Discover Weekly) always 403s here now, for any
+    // third-party app, not just this one. If a playlist you *did* create also 403s, that's the
+    // separate allow-listing issue instead — the two read identically here, so both get named.
+    throw new Error(`${message}\n\nSpotify only hands a playlist's tracks to the account that owns it — if you didn't create this playlist (followed, collaborative, Discover Weekly, etc.), this 403 is permanent and not fixable here. If you DID create it, your account probably isn't allow-listed for this app yet (Users and Access in the dashboard).`);
   }
 }
 
@@ -452,7 +394,6 @@ function renderBand($: any, e: any, options: any) {
       errorMessage = err?.message ?? String(err);
     }
     await refreshNowPlaying($);
-    await refreshSavedIfTrackChanged($, options);
     $.ui.invalidate('ui.render');
   };
 
@@ -507,19 +448,9 @@ function renderBand($: any, e: any, options: any) {
           <Button key="playpause" label={np.state === 'playing' ? '⏸' : '▶'} onPress={afterAction(() => playPause($))} />
           <Button key="next" label="⏭" onPress={afterAction(() => nextTrack($))} />
           <Button key="mute" label={np.volume > 0 ? '🔇' : '🔊'} onPress={afterAction(() => toggleMute($))} />
-          {auth && (
-            // "❓" is deliberately not the same glyph as "🤍" — `saved === null` means "don't
-            // know yet" (still checking, or the check itself keeps failing), not "not liked",
-            // and those used to be visually identical, which is exactly what made a stuck
-            // failure indistinguishable from an accurately-unliked song
-            <Button key="like" label={saved === true ? '💚' : saved === false ? '🤍' : '❓'} onPress={afterAction(() => toggleLike($, options))} />
-          )}
         </Box>
         <Markdown text={`**${np.track || '(unknown track)'}**  ·  ${np.artist}${np.album ? ' · ' + np.album : ''}`} />
         <Text dimColor wrap="truncate-end">{`${formatTime(np.positionSec)}  ${progressBar(np.positionSec, np.durationMs, 16)}  ${formatTime(np.durationMs / 1000)}`}</Text>
-        {auth && saved === null && savedError && (
-          <Text dimColor wrap="truncate-end">{`like status unknown: ${savedError}`}</Text>
-        )}
       </Box>
     );
   }
@@ -631,7 +562,7 @@ function renderFullscreen($: any, e: any, options: any) {
             <Button
               key={`playlist:${p.id}`}
               plain
-              label={`${p.name} (${p.trackCount})`}
+              label={p.name}
               onPress={afterPaneAction(async () => {
                 selectedPlaylist = p;
                 playlistTracks = null;
@@ -648,7 +579,7 @@ function renderFullscreen($: any, e: any, options: any) {
 
 // ---------- wiring ----------
 
-async function handleCommandRun($: any, e: any, options: any): Promise<{ text?: string }> {
+async function handleCommandRun($: any, e: any): Promise<{ text?: string }> {
   const arg = (e.args as string).trim().toLowerCase();
   if (arg === 'stop' || arg === 'close') {
     open = false;
@@ -663,7 +594,6 @@ async function handleCommandRun($: any, e: any, options: any): Promise<{ text?: 
 
   open = true;
   await refreshNowPlaying($);
-  await refreshSavedIfTrackChanged($, options);
   $.ui.invalidate('ui.render');
   return { text: '$Spotify · controls above the prompt, ⛶ for playlists · Esc returns to it · /spotify stop closes' };
 }
@@ -690,7 +620,6 @@ async function handleUiMessage($: any, e: any, next: any, options: any) {
   const data = e.data as { tick?: unknown } | null;
   if (!data?.tick) return next(e);
   await refreshNowPlaying($);
-  await refreshSavedIfTrackChanged($, options);
   if (pendingLogin) await checkLoginCallback($, options);
   $.ui.invalidate('ui.render');
   return { props: {} };
@@ -712,7 +641,7 @@ async function handleSessionStart($: any, e: any, next: any) {
 
 export const register: Register = (on, options) => {
   on('session.start', handleSessionStart);
-  on('command.run', { command: 'spotify' }, ($, e) => handleCommandRun($, e, options));
+  on('command.run', { command: 'spotify' }, ($, e) => handleCommandRun($, e));
   on('ui.render', { component: 'AbovePrompt' }, ($, e, next) => handleAbovePromptRender($, e, next, options));
   on('ui.render', { component: 'Pane' }, ($, e, next) => handlePaneRender($, e, next, options));
   on('ui.message', ($, e, next) => handleUiMessage($, e, next, options));

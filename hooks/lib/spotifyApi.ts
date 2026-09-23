@@ -15,13 +15,11 @@ export function tokenSetFrom(json: any, previousRefreshToken: string): TokenSet 
   };
 }
 
-export type Playlist = { id: string; name: string; trackCount: number };
+export type Playlist = { id: string; name: string };
 
 export function toPlaylists(json: any): Playlist[] {
   const items = Array.isArray(json?.items) ? json.items : [];
-  return items
-    .filter((p: any) => p && p.id)
-    .map((p: any) => ({ id: p.id, name: p.name ?? '(untitled)', trackCount: p.tracks?.total ?? 0 }));
+  return items.filter((p: any) => p && p.id).map((p: any) => ({ id: p.id, name: p.name ?? '(untitled)' }));
 }
 
 export type PlaylistTrack = { uri: string; name: string; artist: string };
