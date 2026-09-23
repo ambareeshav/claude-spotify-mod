@@ -228,12 +228,15 @@ async function startLogin($: any, options: any): Promise<void> {
     const challenge = await challengeFor(verifier);
     pendingLogin = { verifier, state };
     loginError = null;
-    // best-effort: writes and backgrounds the one-shot local listener that lets the tick
-    // handler (below) pick the code up on its own. If python3 is missing or the port's taken,
-    // this silently does nothing and the manual-paste `Input` in the sidebar still works.
+    // best-effort: writes and backgrounds the listener that lets the tick handler (below) pick
+    // the code up on its own. If python3 is missing, this silently does nothing and the
+    // manual-paste `Input` in the sidebar still works. `pkill` first clears out any listener
+    // still bound to the port from an earlier, abandoned attempt (it can sit alive for up to
+    // three minutes) — without it, a retry's new listener fails to bind at all ("address already
+    // in use"), silently, since this call is backgrounded and its exit code is never checked.
     await $.fs.write(serverScriptFilePath(state), loopbackServerScript(state)).catch(() => {});
     await $.process
-      .run(['/bin/sh', '-c', `nohup python3 ${serverScriptFilePath(state)} > /dev/null 2>&1 & disown`])
+      .run(['/bin/sh', '-c', `pkill -f spotify-mod-server- 2>/dev/null; nohup python3 ${serverScriptFilePath(state)} > /dev/null 2>&1 & disown`])
       .catch(() => {});
     await $.process.run(['open', authUrl(clientId, challenge, state)]);
   } catch (err: any) {

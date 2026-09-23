@@ -301,6 +301,9 @@ test('connecting spawns a backgrounded local listener, and the tick picks up the
 
   // a listener script got written and spawned backgrounded, ready for the real redirect to land on
   expect(calls.some(c => c.includes('nohup python3'))).toBe(true);
+  // a stale listener from an earlier, abandoned attempt can sit bound to the port for up to
+  // three minutes — without clearing it first, a retry's new listener fails to bind at all
+  expect(calls.some(c => c.includes('pkill -f spotify-mod-server-'))).toBe(true);
   const scriptPath = [...files.keys()].find(p => p.includes('spotify-mod-server-'));
   expect(scriptPath).toBeDefined();
   const state = scriptPath!.match(/spotify-mod-server-(.+)\.py$/)![1];
@@ -436,6 +439,11 @@ test('the local callback listener script is scoped to the right state, file, and
   expect(callbackFilePath(state)).toContain(state);
   // a different login's state must never resolve to this one's file
   expect(callbackFilePath('other-state')).not.toBe(callbackFilePath(state));
+  // it must loop until a real callback (code/error present), not stop after the first request of
+  // any kind — a single-shot server is gone by the time the real redirect lands if a browser's
+  // preconnect or a stray favicon fetch reaches the port first, which reads as the page hanging
+  expect(script).toContain('got_it');
+  expect(script).toMatch(/while not srv\.got_it/);
 });
 
 test('/spotify logout clears the connection and returns the sidebar to the connect screen', async ($: any, on: any) => {

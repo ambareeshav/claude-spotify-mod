@@ -87,33 +87,53 @@ export function serverScriptFilePath(state: string): string {
   return `/tmp/spotify-mod-server-${state}.py`;
 }
 
-// a one-shot HTTP server: takes the one redirect Spotify sends, writes its code/state/error to
-// CALLBACK_FILE as JSON, answers the browser with a page saying to come back, and shuts itself
-// down — python3 is reliably preinstalled on macOS, so this needs no compiled helper. `$` has no
+// a short-lived HTTP server: takes the redirect Spotify sends, writes its code/state/error to
+// CALLBACK_FILE as JSON, answers the browser with a page saying to come back, and stops —
+// python3 is reliably preinstalled on macOS, so this needs no compiled helper. `$` has no
 // long-lived-process primitive (`process.run` is one-shot, resolves only once its child exits),
 // so this is spawned backgrounded (`nohup ... & disown`) from a shell that itself exits right
 // away, and the hooks module polls for the file it wrote on the ticker's existing once-a-second
 // tick instead of waiting on the listener directly.
+//
+// It loops `handle_request()` rather than answering exactly once: a single-shot server that
+// exits after the very first connection is gone by the time the real OAuth redirect lands if
+// anything else reaches the port first (a browser's speculative preconnect, a stray favicon
+// fetch) — which reads to the person as the page hanging ("took too long to respond"), not an
+// instant, expected "can't reach this page". Requests that aren't the real callback are answered
+// (so nothing hangs) but don't stop the loop; only one carrying `code` or `error` does. The file
+// write is wrapped so a failure there (e.g. a sandboxed environment that can't write to /tmp)
+// still can't prevent the HTTP response from going out.
 export function loopbackServerScript(state: string): string {
   const filePath = callbackFilePath(state);
   return [
-    'import http.server, json, threading, urllib.parse',
+    'import http.server, json, time, urllib.parse',
     `PATH = ${JSON.stringify(filePath)}`,
     'class H(http.server.BaseHTTPRequestHandler):',
     '    def do_GET(self):',
     '        q = urllib.parse.urlparse(self.path)',
     '        p = urllib.parse.parse_qs(q.query)',
-    "        data = {'code': p.get('code', [''])[0], 'state': p.get('state', [''])[0], 'error': p.get('error', [''])[0]}",
-    "        open(PATH, 'w').write(json.dumps(data))",
+    "        code = p.get('code', [''])[0]",
+    "        state = p.get('state', [''])[0]",
+    "        error = p.get('error', [''])[0]",
+    '        is_callback = bool(code or error)',
     '        self.send_response(200)',
     "        self.send_header('Content-Type', 'text/html')",
     '        self.end_headers()',
-    "        self.wfile.write(b'<html><body>Connected. You can close this tab and go back to Claude Code.</body></html>')",
-    '        threading.Thread(target=self.server.shutdown).start()',
+    "        self.wfile.write(b'<html><body>Connected. You can close this tab and go back to Claude Code.</body></html>' if is_callback else b'')",
+    '        if is_callback:',
+    '            try:',
+    "                open(PATH, 'w').write(json.dumps({'code': code, 'state': state, 'error': error}))",
+    '            except Exception:',
+    '                pass',
+    '            self.server.got_it = True',
     '    def log_message(self, *a):',
     '        pass',
     `srv = http.server.HTTPServer(('127.0.0.1', ${CALLBACK_PORT}), H)`,
-    'srv.timeout = 180',
-    'srv.handle_request()',
+    'srv.got_it = False',
+    'deadline = time.time() + 180',
+    'while not srv.got_it and time.time() < deadline:',
+    '    srv.timeout = max(1, deadline - time.time())',
+    '    srv.handle_request()',
+    'srv.server_close()',
   ].join('\n');
 }
