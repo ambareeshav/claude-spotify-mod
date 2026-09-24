@@ -24,6 +24,9 @@ function installMocks(on: any, opts: { running?: boolean; playCalls?: string[]; 
         const fields = [TRACK_ID, 'Midnight City', 'M83', "Hurry Up, We're Dreaming", '243000', pos, 'playing', '55'];
         return { value: { exitCode: 0, stdout: fields.join(SEP), stderr: '' } };
       }
+      if (script.includes('artwork url')) {
+        return { value: { exitCode: 0, stdout: 'https://i.scdn.co/image/abc\n', stderr: '' } };
+      }
       if (script.includes('sound volume') && !script.includes('set sound volume')) {
         return { value: { exitCode: 0, stdout: '55', stderr: '' } };
       }
@@ -538,8 +541,14 @@ test('/spotify logout clears the connection and returns the sidebar to the conne
   register(on, { clientId: 'test-client-id' });
   installMocks(on);
   const storeWrites: unknown[] = [];
+  // reads back the last write, so the pane's own reload-recovery loadAuth sees the cleared store
   on('store.get', async ($: any, e: any) => ({
-    value: e.key === 'spotify:tokens' ? { accessToken: 'access-1', refreshToken: 'refresh-1', expiresAt: Date.now() + 60 * 60 * 1000 } : undefined,
+    value:
+      e.key !== 'spotify:tokens'
+        ? undefined
+        : storeWrites.length
+          ? storeWrites[storeWrites.length - 1]
+          : { accessToken: 'access-1', refreshToken: 'refresh-1', expiresAt: Date.now() + 60 * 60 * 1000 },
   }));
   on('store.set', async ($: any, e: any) => {
     if (e.key === 'spotify:tokens') storeWrites.push(e.value);
@@ -560,6 +569,95 @@ test('/spotify logout clears the connection and returns the sidebar to the conne
   expect(await pane.find({ text: /connect Spotify/ })).toBeDefined();
 
   await band.unmount();
+  await pane.unmount();
+});
+
+test('a pane mounted with nothing loaded (as one surviving a plugin reload is) loads auth and playlists itself', async ($: any, on: any) => {
+  register(on, { clientId: 'test-client-id' });
+  installMocks(on);
+  installStoreMocks(on, { initialToken: { accessToken: 'access-1', refreshToken: 'refresh-1', expiresAt: Date.now() + 60 * 60 * 1000 } });
+  installWebApiMocks(on);
+
+  // no ◫ press — that's what used to be the only thing that loaded playlists
+  const pane = await $.ui.mount({ plugin: 'spotify', surface: 'terminal', component: 'Pane', requestId: 'spotify-full', props: PANE_PROPS });
+  expect(await pane.find({ text: /Focus/ })).toBeDefined();
+  await pane.unmount();
+});
+
+test('the sidebar header shows the playing track with its cover art, fetched once per track', async ($: any, on: any) => {
+  register(on, { clientId: 'test-client-id' });
+  const calls: string[] = [];
+  installMocks(on, { playCalls: calls });
+  installStoreMocks(on, { initialToken: { accessToken: 'access-1', refreshToken: 'refresh-1', expiresAt: Date.now() + 60 * 60 * 1000 } });
+  installWebApiMocks(on);
+
+  await $.command.run({ command: 'spotify', args: '' });
+  const band = await $.ui.mount({ plugin: 'spotify', surface: 'terminal', component: 'AbovePrompt', requestId: 'spotify', props: BAND_PROPS });
+  await band.advance(1000);
+  await band.advance(1000);
+  expect(calls.filter(c => c.includes('sips')).length).toBe(1); // same track, converted once
+
+  const pane = await $.ui.mount({ plugin: 'spotify', surface: 'terminal', component: 'Pane', requestId: 'spotify-full', props: PANE_PROPS });
+  expect(await pane.find({ text: /Now playing/ })).toBeDefined();
+  expect(await pane.find({ key: 'pane:art' })).toBeDefined();
+  await pane.unmount();
+  await band.unmount();
+});
+
+test('the pane draws only the list rows that fit under its pinned header', async ($: any, on: any) => {
+  register(on, { clientId: 'test-client-id' });
+  installMocks(on);
+  installStoreMocks(on, { initialToken: { accessToken: 'access-1', refreshToken: 'refresh-1', expiresAt: Date.now() + 60 * 60 * 1000 } });
+  // ahead of installWebApiMocks, so this answers /me/playlists before its two-playlist default does
+  on('http.fetch', { url: 'https://api.spotify.com/v1/me/playlists?limit=50' }, async () => ({
+    value: {
+      status: 200,
+      ok: true,
+      headers: {},
+      text: JSON.stringify({ items: Array.from({ length: 40 }, (_, i) => ({ id: `p${i}`, name: `List ${i}`, owner: { id: 'my-id' } })) }),
+    },
+  }));
+  installWebApiMocks(on);
+
+  const props = { ...PANE_PROPS, scroll: { offset: 0, bodyRows: 20 } };
+  const pane = await $.ui.mount({ plugin: 'spotify', surface: 'terminal', component: 'Pane', requestId: 'spotify-full', props });
+  expect(await pane.find({ key: 'playlist:p0' })).toBeDefined();
+  expect(await pane.find({ key: 'playlist:p39' })).toBeUndefined(); // off the bottom, not drawn at all
+
+  // (the test kit's $.ui.scroll can't resolve an offset for a mounted pane, so the wheel path
+  // itself — handlePaneScroll — is only exercised live)
+  expect(await pane.find({ key: 'pane:search' })).toBeDefined();
+  await pane.unmount();
+});
+
+test('Liked Songs loads every page, not just the first 50', async ($: any, on: any) => {
+  register(on, { clientId: 'test-client-id' });
+  installMocks(on);
+  installStoreMocks(on, { initialToken: { accessToken: 'access-1', refreshToken: 'refresh-1', expiresAt: Date.now() + 60 * 60 * 1000 } });
+  const page = (from: number, next: string | null) => ({
+    value: {
+      status: 200,
+      ok: true,
+      headers: {},
+      text: JSON.stringify({
+        items: Array.from({ length: 50 }, (_, i) => ({ track: { uri: `spotify:track:t${from + i}`, name: `Liked ${from + i}`, artists: [] } })),
+        next,
+      }),
+    },
+  });
+  on('http.fetch', { url: 'https://api.spotify.com/v1/me/tracks?limit=50' }, async () => page(0, 'https://api.spotify.com/v1/me/tracks?offset=50&limit=50'));
+  on('http.fetch', { url: 'https://api.spotify.com/v1/me/tracks?offset=50&limit=50' }, async () => page(50, null));
+  const bodies: string[] = [];
+  on('http.fetch', { url: 'https://api.spotify.com/v1/me/player/play' }, async ($: any, e: any) => {
+    bodies.push(e.init?.body ?? '');
+    return { value: { status: 204, ok: true, headers: {}, text: '' } };
+  });
+  installWebApiMocks(on);
+
+  const pane = await $.ui.mount({ plugin: 'spotify', surface: 'terminal', component: 'Pane', requestId: 'spotify-full', props: PANE_PROPS });
+  await pane.press({ key: 'playlist:__liked__' });
+  await pane.press({ key: 'pane:play' });
+  expect(JSON.parse(bodies[bodies.length - 1]).uris.length).toBe(100);
   await pane.unmount();
 });
 

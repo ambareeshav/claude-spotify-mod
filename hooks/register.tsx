@@ -112,6 +112,40 @@ async function refreshNowPlaying($: any): Promise<void> {
   }
 }
 
+// ---------- album art (the sidebar's header) ----------
+
+// the art as a local PNG the terminal reads itself (kitty graphics — Ghostty, kitty); anywhere
+// else `Image` draws its alt text instead. Spotify serves JPEGs and `Image` only takes PNG, so
+// curl + macOS's own `sips` convert it once per track, keyed by track id so a redraw of the same
+// track sends nothing new
+let art: { trackId: string; path: string | null } | null = null;
+let artLoading = false;
+
+async function refreshArt($: any): Promise<void> {
+  if (!nowPlaying.running || artLoading) return;
+  const trackId = nowPlaying.trackId;
+  if (art?.trackId === trackId) return;
+  artLoading = true;
+  try {
+    const url = (await runOsa($, 'tell application "Spotify" to artwork url of current track')).trim();
+    const path = `/tmp/spotify-mod-art-${trackId.replace(/[^A-Za-z0-9]/g, '')}.png`;
+    // old tracks' art first, so /tmp holds one image at a time
+    const res = await $.process.run([
+      '/bin/sh',
+      '-c',
+      'rm -f /tmp/spotify-mod-art-*; curl -sfL "$1" -o "$2.jpg" && sips -s format png "$2.jpg" --out "$2" >/dev/null && rm -f "$2.jpg"',
+      'sh',
+      url,
+      path,
+    ]);
+    art = { trackId, path: url.startsWith('https://') && res.exitCode === 0 ? path : null };
+  } catch {
+    art = { trackId, path: null }; // no art is fine — the header just goes without
+  } finally {
+    artLoading = false;
+  }
+}
+
 async function openSpotify($: any): Promise<void> {
   await $.process.run(['open', '-a', 'Spotify']);
 }
@@ -319,26 +353,46 @@ async function ensureMyUserId($: any, options: any): Promise<string> {
   return myUserId;
 }
 
+// Spotify pages every list (50 at most per request) and hands back `next`, the full URL of the
+// page after, null on the last. `onPage` returning false stops early — the view it was loading
+// for was left. Pages land one by one, each redrawn, so a long list shows its top straight away
+const API_BASE = 'https://api.spotify.com/v1';
+async function forEachPage($: any, options: any, firstPath: string, onPage: (json: any) => boolean | void): Promise<void> {
+  let path: string | null = firstPath;
+  while (path) {
+    const json = await spotifyApi($, options, 'GET', path);
+    if (onPage(json) === false) return;
+    $.ui.invalidate('ui.render');
+    const next = json?.next;
+    path = typeof next === 'string' && next.startsWith(API_BASE) ? next.slice(API_BASE.length) : null;
+  }
+}
+
 async function loadPlaylists($: any, options: any): Promise<void> {
   // Liked Songs isn't in /me/playlists at all (Spotify doesn't treat it as a playlist resource),
   // so it's synthesized here as its own entry, always listed first
   const ownerId = await ensureMyUserId($, options);
-  const json = await spotifyApi($, options, 'GET', '/me/playlists?limit=50');
-  playlists = [{ id: LIKED_SONGS_ID, name: 'Liked Songs' }, ...toPlaylists(json, ownerId)];
+  const owned: Playlist[] = [];
+  await forEachPage($, options, '/me/playlists?limit=50', json => {
+    owned.push(...toPlaylists(json, ownerId));
+  });
+  playlists = [{ id: LIKED_SONGS_ID, name: 'Liked Songs' }, ...owned];
 }
 
 async function loadPlaylistTracks($: any, options: any, playlistId: string): Promise<void> {
+  const openedFor = selectedPlaylist;
+  // `/tracks` is Spotify's now-deprecated path for a playlist's — it started returning 403 for
+  // every request after Spotify's early-2026 API migration, even for a playlist you made yourself
+  // and are properly authorized for. `/items` is the replacement.
+  const firstPath = playlistId === LIKED_SONGS_ID ? '/me/tracks?limit=50' : `/playlists/${playlistId}/items?limit=50`;
   try {
-    if (playlistId === LIKED_SONGS_ID) {
-      const json = await spotifyApi($, options, 'GET', '/me/tracks?limit=50');
-      playlistTracks = toPlaylistTracks(json);
-      return;
-    }
-    // `/tracks` is Spotify's now-deprecated path for this — it started returning 403 for every
-    // request after Spotify's early-2026 API migration, even for a playlist you made yourself
-    // and are properly authorized for. `/items` is the replacement.
-    const json = await spotifyApi($, options, 'GET', `/playlists/${playlistId}/items?limit=50`);
-    playlistTracks = toPlaylistTracks(json);
+    let first = true;
+    await forEachPage($, options, firstPath, json => {
+      if (selectedPlaylist !== openedFor) return false;
+      const page = toPlaylistTracks(json);
+      playlistTracks = first ? page : [...(playlistTracks ?? []), ...page];
+      first = false;
+    });
   } catch (err: any) {
     const message = err?.message ?? String(err);
     if (!message.includes('403')) throw err;
@@ -382,7 +436,9 @@ async function playPlaylist($: any, options: any, playlistId: string, shuffle: b
       throw new Error('open Liked Songs first so its tracks are loaded, then play');
     }
     const tracks = shuffle ? shuffled(playlistTracks) : playlistTracks;
-    await playOnDevice($, options, { uris: tracks.map(t => t.uri) });
+    // capped: every loaded track now (not one page), and a request body of thousands of URIs is
+    // asking for a 413 — 500 is still a long, properly mixed session
+    await playOnDevice($, options, { uris: tracks.slice(0, 500).map(t => t.uri) });
     return;
   }
   if (shuffle) await spotifyApi($, options, 'PUT', '/me/player/shuffle?state=true').catch(() => {});
@@ -433,16 +489,36 @@ async function loadFrame($: any, options: any, frame: BrowseFrame): Promise<void
   if (item.kind === 'artist') {
     const json = await spotifyApi($, options, 'GET', `/artists/${item.id}/albums?include_groups=album,single&limit=10`);
     frame.albums = toArtistAlbums(json);
-  } else if (item.kind === 'album') {
-    frame.tracks = toPlaylistTracks(await spotifyApi($, options, 'GET', `/albums/${item.id}/tracks?limit=50`));
   } else {
-    frame.tracks = toPlaylistTracks(await spotifyApi($, options, 'GET', `/playlists/${item.id}/items?limit=50`));
+    const firstPath = item.kind === 'album' ? `/albums/${item.id}/tracks?limit=50` : `/playlists/${item.id}/items?limit=50`;
+    await forEachPage($, options, firstPath, json => {
+      if (!browseStack.includes(frame)) return false;
+      frame.tracks = [...(frame.tracks ?? []), ...toPlaylistTracks(json)];
+    });
   }
 }
 
 async function playContext($: any, options: any, contextUri: string, shuffle: boolean): Promise<void> {
   await spotifyApi($, options, 'PUT', `/me/player/shuffle?state=${shuffle}`).catch(() => {});
   await playOnDevice($, options, { context_uri: contextUri });
+}
+
+// the list view's own fallback load. openFullscreen loads playlists when the band's ◫ opens the
+// pane, but a pane that outlives a module reload (/reload-plugins, an update) comes back with
+// `playlists` reset to null and nothing left to load it, so it said "loading…" forever
+let playlistsLoading = false;
+function ensurePlaylistsLoading($: any, options: any): void {
+  if (!auth || playlists !== null || playlistsLoading) return;
+  playlistsLoading = true;
+  loadPlaylists($, options)
+    .catch((err: any) => {
+      playlists = [];
+      paneError = err?.message ?? String(err);
+    })
+    .finally(() => {
+      playlistsLoading = false;
+      $.ui.invalidate('ui.render');
+    });
 }
 
 async function openFullscreen($: any, options: any): Promise<void> {
@@ -576,9 +652,106 @@ function renderBand($: any, e: any, options: any) {
   );
 }
 
+// sidebar colors — raw hex, not theme keys, since the tint is meant to read as "Spotify" in either
+// terminal theme. The tint is deliberately near-black: anything lighter fights the text colors
+const SPOTIFY_GREEN = '#1DB954';
+// the pane's background: a vertical black → rust gradient. There's no gradient prop, so each drawn
+// line gets its own solid backgroundColor, stepped down the pane: `lineBg(n)` claims the next n
+// lines (in drawing order) and returns the color at their middle. Eased so the top — the art and
+// the search box — stays close to black and the rust builds toward the bottom
+const GRADIENT_FROM = [0x00, 0x00, 0x00];
+const GRADIENT_TO = [0x9c, 0x3f, 0x17]; // rust, dark enough that white text still reads on it
+let gradientRow = 0;
+let gradientRows = 1;
+
+function gradientAt(row: number): string {
+  const t = Math.pow(Math.min(1, Math.max(0, row / Math.max(1, gradientRows - 1))), 1.4);
+  return '#' + GRADIENT_FROM.map((from, i) => Math.round(from + (GRADIENT_TO[i] - from) * t).toString(16).padStart(2, '0')).join('');
+}
+
+// props for one full-width line of the pane (or an n-line block drawn as one solid band)
+function line(n = 1) {
+  const bg = gradientAt(gradientRow + (n - 1) / 2);
+  gradientRow += n;
+  return { backgroundColor: bg, paddingX: 1 } as const;
+}
+
+// the pane scrolls its own list, not the engine's window over the whole tree: the header (art,
+// search box, a view's title row) stays pinned, so the cover image never has to be re-placed as
+// you scroll — Ghostty redrawing a moving kitty image every wheel tick is what made scrolling
+// stutter — and the gradient stays anchored to the screen instead of scrolling away with the rows.
+// `ui.scroll` (below) moves `listOffset`; each view draws only the rows that fit under its header
+let listOffset = 0;
+let listMax = 0;
+let listView = '';
+let paneColumns = 60;
+
+// one list row is always one line — a label that wrapped would throw every row after it off the
+// gradient and off the window's row count
+function fit(label: string): string {
+  const room = Math.max(8, paneColumns - 2);
+  return label.length > room ? label.slice(0, room - 1) + '…' : label;
+}
+
+// `view` names what's listed; a new view starts back at its top
+function windowed(view: string, rows: Array<() => any>): any[] {
+  if (view !== listView) {
+    listView = view;
+    listOffset = 0;
+  }
+  const visible = Math.max(1, gradientRows - gradientRow);
+  listMax = Math.max(0, rows.length - visible);
+  listOffset = Math.min(listOffset, listMax);
+  return rows.slice(listOffset, listOffset + visible).map(row => row());
+}
+const ROW_HOVER = { backgroundColor: '#2a2a2a', color: SPOTIFY_GREEN } as const;
+
 // ---------- sidebar (Pane): playlists only, no player — that's the band's job ----------
 
 function renderFullscreen($: any, e: any, options: any) {
+  const { Box } = $.ui.resolve(e);
+  const bodyRows = Number(e.props?.scroll?.bodyRows) || 30;
+  gradientRow = 0;
+  gradientRows = bodyRows;
+  paneColumns = Number(e.props?.bodyColumns) || 60;
+  const header = renderNowPlayingHeader($, e);
+  const body = renderPaneBody($, e, options);
+  // empty lines to the bottom of the pane, so the gradient reaches it even under a short list
+  const filler = Array.from({ length: Math.max(0, bodyRows - gradientRow) }, (_, i) => (
+    <Box key={`pane:fill:${i}`} height={1} {...line()} />
+  ));
+  return (
+    // sized to the pane's own box: a Box only paints its background over the cells it occupies
+    <Box flexDirection="column" width={e.props?.bodyColumns}>
+      {header}
+      {body}
+      {filler}
+    </Box>
+  );
+}
+
+// the one bit of "player" the sidebar has: what's on, with its cover. Image is terminal-only
+// (the other surfaces' element tables don't have it), so elsewhere this is just the text
+function renderNowPlayingHeader($: any, e: any) {
+  if (!nowPlaying.running) return null;
+  const { Box, Text, Image } = $.ui.resolve(e);
+  const np = nowPlaying;
+  const showArt = e.surface === 'terminal' && art?.trackId === np.trackId && art.path;
+  return (
+    <Box flexDirection="row" columnGap={2} paddingBottom={1} {...line(8)}>
+      {/* 14×7 cells reads as square: a terminal cell is about twice as tall as it is wide */}
+      {showArt && <Image key="pane:art" source={{ file: art!.path, format: 'png' }} columns={14} rows={7} alt={np.album || ' '} />}
+      <Box flexDirection="column" justifyContent="center">
+        <Text bold color={SPOTIFY_GREEN}>{np.state === 'playing' ? 'Now playing' : 'Paused'}</Text>
+        <Text bold wrap="truncate-end">{np.track || '(unknown track)'}</Text>
+        <Text wrap="truncate-end">{np.artist}</Text>
+        {np.album ? <Text dimColor wrap="truncate-end">{np.album}</Text> : null}
+      </Box>
+    </Box>
+  );
+}
+
+function renderPaneBody($: any, e: any, options: any) {
   const { Box, Text, Button, Markdown, Input } = $.ui.resolve(e);
 
   const afterPaneAction = (action: () => Promise<void>) => async () => {
@@ -592,7 +765,7 @@ function renderFullscreen($: any, e: any, options: any) {
 
   if (!auth) {
     return (
-      <Box flexDirection="column">
+      <Box flexDirection="column" {...line(pendingLogin ? 8 : 2)}>
         <Markdown text="**Connect Spotify** to browse and play your playlists." />
         <Button key="pane:connect" label="connect Spotify" onPress={afterPaneAction(() => startLogin($, options))} />
         {pendingLogin && (
@@ -618,8 +791,8 @@ function renderFullscreen($: any, e: any, options: any) {
 
   // a dismissible banner, not a screen that replaces navigation — a failed load anywhere used
   // to hide the back button along with everything else, leaving no way out of a broken view
-  const errorBanner = paneError ? (
-    <Box flexDirection="row" columnGap={2}>
+  const errorBanner = () => paneError ? (
+    <Box flexDirection="row" columnGap={2} {...line()}>
       <Text color="red" wrap="wrap">{paneError}</Text>
       <Button key="pane:dismiss-error" label="✕" onPress={afterPaneAction(async () => { paneError = null; })} />
     </Box>
@@ -631,37 +804,44 @@ function renderFullscreen($: any, e: any, options: any) {
     const back = (
       <Button key="pane:back-browse" label="‹" onPress={afterPaneAction(async () => { browseStack = browseStack.slice(0, -1); })} />
     );
-    const body = it.kind === 'artist'
-      ? frame.albums === null ? <Text dimColor>loading…</Text> : frame.albums.length === 0 ? <Text dimColor>no albums</Text> : (
+    const view = `browse:${browseStack.length}:${it.uri}`;
+    // a function, not a tree: it has to run after the title row has claimed its gradient line
+    const body = () => it.kind === 'artist'
+      ? frame.albums === null ? <Box {...line()}><Text dimColor>loading…</Text></Box> : frame.albums.length === 0 ? <Box {...line()}><Text dimColor>no albums</Text></Box> : (
           <Box flexDirection="column">
-            {frame.albums.map(a => (
-              <Button key={`browse:${a.uri}`} plain label={`◉ ${a.name}`} onPress={afterPaneAction(() => openSearchResult($, options, a))} />
-            ))}
+            {windowed(view, frame.albums.map(a => () => (
+              <Box key={`row:browse:${a.uri}`} {...line()}>
+                <Button key={`browse:${a.uri}`} plain hover={ROW_HOVER} label={fit(`◉ ${a.name}`)} onPress={afterPaneAction(() => openSearchResult($, options, a))} />
+              </Box>
+            )))}
           </Box>
         )
-      : frame.tracks === null ? <Text dimColor>loading…</Text> : frame.tracks.length === 0 ? <Text dimColor>no tracks</Text> : (
+      : frame.tracks === null ? <Box {...line()}><Text dimColor>loading…</Text></Box> : frame.tracks.length === 0 ? <Box {...line()}><Text dimColor>no tracks</Text></Box> : (
           <Box flexDirection="column">
             {/* played inside its album/playlist (offset), so the rest of it follows on after */}
-            {frame.tracks.map(t => (
-              <Button
-                key={`browse:${t.uri}`}
-                plain
-                label={`▸ ${t.name} — ${t.artist}`}
-                onPress={afterPaneAction(() => playOnDevice($, options, { context_uri: it.uri, offset: { uri: t.uri } }))}
-              />
-            ))}
+            {windowed(view, frame.tracks.map(t => () => (
+              <Box key={`row:browse:${t.uri}`} {...line()}>
+                <Button
+                  key={`browse:${t.uri}`}
+                  plain
+                  hover={ROW_HOVER}
+                  label={fit(`▸ ${t.name} — ${t.artist}`)}
+                  onPress={afterPaneAction(() => playOnDevice($, options, { context_uri: it.uri, offset: { uri: t.uri } }))}
+                />
+              </Box>
+            )))}
           </Box>
         );
     return (
       <Box flexDirection="column">
-        <Box flexDirection="row" columnGap={2}>
+        <Box flexDirection="row" columnGap={2} {...line()}>
           {back}
           <Button key="pane:browse-play" label="▶" onPress={afterPaneAction(() => playContext($, options, it.uri, false))} />
           <Button key="pane:browse-shuffle" label="🔀" onPress={afterPaneAction(() => playContext($, options, it.uri, true))} />
           <Markdown text={`**${it.name}**  ·  ${it.detail}`} />
         </Box>
-        {errorBanner}
-        {body}
+        {errorBanner()}
+        {body()}
       </Box>
     );
   }
@@ -671,7 +851,7 @@ function renderFullscreen($: any, e: any, options: any) {
     const sectionTitle = { track: 'Songs', album: 'Albums', artist: 'Artists', playlist: 'Playlists' } as const;
     return (
       <Box flexDirection="column">
-        <Box flexDirection="row" columnGap={2}>
+        <Box flexDirection="row" columnGap={2} {...line()}>
           <Button
             key="pane:back-search"
             label="‹"
@@ -682,31 +862,36 @@ function renderFullscreen($: any, e: any, options: any) {
           />
           <Markdown text={`**Search:** ${searchQuery}`} />
         </Box>
-        {errorBanner}
+        {errorBanner()}
         {searchResults === null ? (
-          <Text dimColor>searching…</Text>
+          <Box {...line()}><Text dimColor>searching…</Text></Box>
         ) : searchResults.length === 0 ? (
-          <Text dimColor>no results</Text>
+          <Box {...line()}><Text dimColor>no results</Text></Box>
         ) : (
           <Box flexDirection="column">
-            {/* a heading per kind (in toSearchResults' order), skipped when that kind came back empty */}
-            {(['track', 'album', 'artist', 'playlist'] as const).map(kind => {
-              const rows = searchResults!.filter(r => r.kind === kind);
-              if (rows.length === 0) return null;
-              return (
-                <Box key={`section:${kind}`} flexDirection="column">
-                  <Markdown text={`**${sectionTitle[kind]}**`} />
-                  {rows.map(r => (
-                    <Button
-                      key={`result:${r.uri}`}
-                      plain
-                      label={`${icon[r.kind]} ${r.name} — ${r.detail}${canOpen(r) ? '  ›' : ''}`}
-                      onPress={afterPaneAction(() => (canOpen(r) ? openSearchResult($, options, r) : playSearchResult($, options, r)))}
-                    />
-                  ))}
-                </Box>
-              );
-            })}
+            {/* a heading per kind (in toSearchResults' order), skipped when that kind came back empty;
+                headings are rows of the same scrolled list, so they scroll away with their section */}
+            {windowed(
+              `search:${searchQuery}`,
+              (['track', 'album', 'artist', 'playlist'] as const).flatMap(kind => {
+                const rows = searchResults!.filter(r => r.kind === kind);
+                if (rows.length === 0) return [];
+                return [
+                  () => <Box key={`section:${kind}`} {...line()}><Text bold color={SPOTIFY_GREEN}>{sectionTitle[kind]}</Text></Box>,
+                  ...rows.map(r => () => (
+                    <Box key={`row:result:${r.uri}`} {...line()}>
+                      <Button
+                        key={`result:${r.uri}`}
+                        plain
+                        hover={ROW_HOVER}
+                        label={fit(`${icon[r.kind]} ${r.name} — ${r.detail}${canOpen(r) ? '  ›' : ''}`)}
+                        onPress={afterPaneAction(() => (canOpen(r) ? openSearchResult($, options, r) : playSearchResult($, options, r)))}
+                      />
+                    </Box>
+                  )),
+                ];
+              }),
+            )}
           </Box>
         )}
       </Box>
@@ -717,7 +902,7 @@ function renderFullscreen($: any, e: any, options: any) {
     const playlist = selectedPlaylist;
     return (
       <Box flexDirection="column">
-        <Box flexDirection="row" columnGap={2}>
+        <Box flexDirection="row" columnGap={2} {...line()}>
           <Button
             key="pane:back-playlists"
             label="‹"
@@ -730,19 +915,22 @@ function renderFullscreen($: any, e: any, options: any) {
           <Button key="pane:shuffle-play" label="🔀" onPress={afterPaneAction(() => playPlaylist($, options, playlist.id, true))} />
           <Markdown text={`**${playlist.name}**`} />
         </Box>
-        {errorBanner}
+        {errorBanner()}
         {playlistTracks === null ? (
-          <Text dimColor>loading…</Text>
+          <Box {...line()}><Text dimColor>loading…</Text></Box>
         ) : (
           <Box flexDirection="column">
-            {playlistTracks.map(t => (
-              <Button
-                key={`track:${t.uri}`}
-                plain
-                label={`▸ ${t.name} — ${t.artist}`}
-                onPress={afterPaneAction(() => playTrack($, options, t.uri))}
-              />
-            ))}
+            {windowed(`playlist:${playlist.id}`, playlistTracks.map(t => () => (
+              <Box key={`row:track:${t.uri}`} {...line()}>
+                <Button
+                  key={`track:${t.uri}`}
+                  plain
+                  hover={ROW_HOVER}
+                  label={fit(`▸ ${t.name} — ${t.artist}`)}
+                  onPress={afterPaneAction(() => playTrack($, options, t.uri))}
+                />
+              </Box>
+            )))}
           </Box>
         )}
       </Box>
@@ -751,41 +939,49 @@ function renderFullscreen($: any, e: any, options: any) {
 
   return (
     <Box flexDirection="column">
-      <Input
-        key="pane:search"
-        placeholder="search songs, albums, artists, playlists…"
-        onSubmit={value => {
-          const q = value.trim();
-          if (!q) return;
-          runSearch($, options, q)
-            .catch((err: any) => {
-              searchResults = [];
-              paneError = err?.message ?? String(err);
-            })
-            .then(() => $.ui.invalidate('ui.render'));
-        }}
-      />
-      <Markdown text="**Playlists**" />
-      {errorBanner}
+      <Box {...line(3)}>
+      <Box borderStyle="round" borderColor={SPOTIFY_GREEN} paddingX={1} flexGrow={1}>
+        <Input
+          key="pane:search"
+          placeholder="search songs, albums, artists, playlists…"
+          onSubmit={value => {
+            const q = value.trim();
+            if (!q) return;
+            runSearch($, options, q)
+              .catch((err: any) => {
+                searchResults = [];
+                paneError = err?.message ?? String(err);
+              })
+              .then(() => $.ui.invalidate('ui.render'));
+          }}
+        />
+      </Box>
+      </Box>
+      <Box {...line()}><Text bold color={SPOTIFY_GREEN}>Playlists</Text></Box>
+      {errorBanner()}
+      {ensurePlaylistsLoading($, options)}
       {playlists === null ? (
-        <Text dimColor>loading…</Text>
+        <Box {...line()}><Text dimColor>loading…</Text></Box>
       ) : playlists.length === 0 ? (
-        <Text dimColor>no playlists</Text>
+        <Box {...line()}><Text dimColor>no playlists</Text></Box>
       ) : (
         <Box flexDirection="column">
-          {playlists.map(p => (
-            <Button
-              key={`playlist:${p.id}`}
-              plain
-              label={p.name}
-              onPress={afterPaneAction(async () => {
-                selectedPlaylist = p;
-                playlistTracks = null;
-                $.ui.invalidate('ui.render');
-                await loadPlaylistTracks($, options, p.id);
-              })}
-            />
-          ))}
+          {windowed('playlists', playlists.map(p => () => (
+            <Box key={`row:playlist:${p.id}`} {...line()}>
+              <Button
+                key={`playlist:${p.id}`}
+                plain
+                hover={ROW_HOVER}
+                label={fit(p.name)}
+                onPress={afterPaneAction(async () => {
+                  selectedPlaylist = p;
+                  playlistTracks = null;
+                  $.ui.invalidate('ui.render');
+                  await loadPlaylistTracks($, options, p.id);
+                })}
+              />
+            </Box>
+          )))}
         </Box>
       )}
     </Box>
@@ -828,13 +1024,27 @@ async function handleAbovePromptRender($: any, e: any, next: any, options: any) 
 
 async function handlePaneRender($: any, e: any, next: any, options: any) {
   if (e.requestId !== PANE_ID) return next(e);
+  if (!auth) await loadAuth($); // same reload case as ensurePlaylistsLoading: module state is gone, the store isn't
   return renderFullscreen($, e, options);
+}
+
+// the pane's own scrolling (see `windowed`): no `next`, so the engine's window never moves and
+// the header stays put; the list moves by the wheel's/keys' `by` instead
+async function handlePaneScroll($: any, e: any, next: any) {
+  if (e.requestId !== PANE_ID) return next(e);
+  const to = Math.min(listMax, Math.max(0, listOffset + (Number(e.by) || 0)));
+  if (to !== listOffset) {
+    listOffset = to;
+    $.ui.invalidate('ui.render');
+  }
+  return {};
 }
 
 async function handleUiMessage($: any, e: any, next: any, options: any) {
   const data = e.data as { tick?: unknown } | null;
   if (!data?.tick) return next(e);
   await refreshNowPlaying($);
+  await refreshArt($);
   if (pendingLogin) await checkLoginCallback($, options);
   $.ui.invalidate('ui.render');
   return { props: {} };
@@ -860,4 +1070,5 @@ export const register: Register = (on, options) => {
   on('ui.render', { component: 'AbovePrompt' }, ($, e, next) => handleAbovePromptRender($, e, next, options));
   on('ui.render', { component: 'Pane' }, ($, e, next) => handlePaneRender($, e, next, options));
   on('ui.message', ($, e, next) => handleUiMessage($, e, next, options));
+  on('ui.scroll', { component: 'Pane' }, ($, e, next) => handlePaneScroll($, e, next));
 };
