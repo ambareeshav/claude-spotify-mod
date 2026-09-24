@@ -55,3 +55,24 @@ export function toPlaylistTracks(json: any): PlaylistTrack[] {
       artist: (t.artists ?? []).map((a: any) => a.name).join(', '),
     }));
 }
+
+// one row of /v1/search, flattened across the types the sidebar asks for. `kind` picks how it
+// plays: a track goes in as `uris`, an album/artist/playlist as its own `context_uri`
+export type SearchResult = { kind: 'track' | 'album' | 'artist' | 'playlist'; uri: string; name: string; detail: string };
+
+const joinArtists = (x: any) => (x?.artists ?? []).map((a: any) => a.name).join(', ');
+
+// tracks first — the thing a search is usually after — then albums, artists, playlists.
+// Spotify pads `items` with nulls for results it won't return, hence the filter
+export function toSearchResults(json: any): SearchResult[] {
+  const pick = (key: string, kind: SearchResult['kind'], detail: (x: any) => string): SearchResult[] =>
+    (Array.isArray(json?.[key]?.items) ? json[key].items : [])
+      .filter((x: any) => x && x.uri)
+      .map((x: any) => ({ kind, uri: x.uri, name: x.name ?? '(untitled)', detail: detail(x) }));
+  return [
+    ...pick('tracks', 'track', joinArtists),
+    ...pick('albums', 'album', joinArtists),
+    ...pick('artists', 'artist', () => 'artist'),
+    ...pick('playlists', 'playlist', (p: any) => `by ${p.owner?.display_name ?? p.owner?.id ?? 'unknown'}`),
+  ];
+}

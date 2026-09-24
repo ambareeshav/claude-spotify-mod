@@ -131,6 +131,21 @@ function installWebApiMocks(on: any, opts: { apiCalls?: string[]; bodies?: strin
         },
       };
     }
+    if (url.includes('/v1/search?')) {
+      return {
+        value: {
+          status: 200,
+          ok: true,
+          headers: {},
+          text: JSON.stringify({
+            tracks: { items: [{ uri: 'spotify:track:sss', name: 'Found Song', artists: [{ name: 'Found Artist' }] }, null] },
+            albums: { items: [{ uri: 'spotify:album:alb', name: 'Found Album', artists: [{ name: 'Found Artist' }] }] },
+            artists: { items: [] },
+            playlists: { items: [null] },
+          }),
+        },
+      };
+    }
     if (url.includes('/me/player/play')) {
       return { value: { status: 204, ok: true, headers: {}, text: '' } };
     }
@@ -360,6 +375,35 @@ test('once connected, the sidebar lists playlists (names only, no track count, n
   await pane.press({ key: 'track:spotify:track:aaa' });
   expect(apiCalls.some(c => c.startsWith('PUT https://api.spotify.com/v1/me/player/play'))).toBe(true);
 
+  await pane.unmount();
+});
+
+test('searching lists results and plays a track by uri, an album by context', async ($: any, on: any) => {
+  register(on, { clientId: 'test-client-id' });
+  installMocks(on);
+  installStoreMocks(on, { initialToken: { accessToken: 'access-1', refreshToken: 'refresh-1', expiresAt: Date.now() + 60 * 60 * 1000 } });
+  const apiCalls: string[] = [];
+  const bodies: string[] = [];
+  installWebApiMocks(on, { apiCalls, bodies });
+
+  await $.command.run({ command: 'spotify', args: '' });
+  const band = await $.ui.mount({ plugin: 'spotify', surface: 'terminal', component: 'AbovePrompt', requestId: 'spotify', props: BAND_PROPS });
+  await band.press({ key: 'spotify:full' });
+  await band.unmount();
+
+  const pane = await $.ui.mount({ plugin: 'spotify', surface: 'terminal', component: 'Pane', requestId: 'spotify-full', props: PANE_PROPS });
+  await pane.input({ key: 'pane:search', text: 'midnight city' });
+  expect(apiCalls.some(c => c.includes('/v1/search?q=midnight+city&type=track%2Calbum%2Cartist%2Cplaylist&limit=10'))).toBe(true);
+  expect(await pane.find({ text: /Found Song/ })).toBeDefined();
+  expect(await pane.find({ text: /Found Album/ })).toBeDefined();
+
+  await pane.press({ key: 'result:spotify:track:sss' });
+  expect(bodies[bodies.length - 1]).toBe(JSON.stringify({ uris: ['spotify:track:sss'] }));
+  await pane.press({ key: 'result:spotify:album:alb' });
+  expect(bodies[bodies.length - 1]).toBe(JSON.stringify({ context_uri: 'spotify:album:alb' }));
+
+  await pane.press({ key: 'pane:back-search' });
+  expect(await pane.find({ text: /Focus/ })).toBeDefined();
   await pane.unmount();
 });
 

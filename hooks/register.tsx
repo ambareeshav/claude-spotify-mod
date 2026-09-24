@@ -13,7 +13,7 @@ import {
   randomVerifier,
   serverScriptFilePath,
 } from './lib/spotifyAuth';
-import { shuffled, tokenSetFrom, toPlaylists, toPlaylistTracks, type Playlist, type PlaylistTrack, type TokenSet } from './lib/spotifyApi';
+import { shuffled, tokenSetFrom, toPlaylists, toPlaylistTracks, toSearchResults, type Playlist, type PlaylistTrack, type SearchResult, type TokenSet } from './lib/spotifyApi';
 
 // Spotify controls above the prompt (the same band tetris and pong draw in), plus a fullscreen
 // sidebar for the things AppleScript can't do at all: browsing/playing playlists. The band talks
@@ -78,6 +78,8 @@ let paneError: string | null = null;
 let playlists: Playlist[] | null = null;
 let selectedPlaylist: Playlist | null = null;
 let playlistTracks: PlaylistTrack[] | null = null;
+let searchQuery: string | null = null; // non-null while the sidebar shows search results
+let searchResults: SearchResult[] | null = null;
 let myUserId: string | null = null; // cached from /me, so loadPlaylists doesn't refetch it every time
 
 // most installs never set this — it's an optional escape hatch for someone who wants their own
@@ -298,6 +300,8 @@ async function logout($: any): Promise<void> {
   playlists = null;
   selectedPlaylist = null;
   playlistTracks = null;
+  searchQuery = null;
+  searchResults = null;
   myUserId = null;
   await $.store.set(TOKEN_STORE_KEY, null).catch((err: any) => $.ui.log(`spotify: token store clear failed: ${err}`));
 }
@@ -379,6 +383,21 @@ async function playPlaylist($: any, options: any, playlistId: string, shuffle: b
   if (shuffle) await spotifyApi($, options, 'PUT', '/me/player/shuffle?state=true').catch(() => {});
   else await spotifyApi($, options, 'PUT', '/me/player/shuffle?state=false').catch(() => {});
   await playOnDevice($, options, { context_uri: `spotify:playlist:${playlistId}` });
+}
+
+// no extra scope — /v1/search only needs a token. Spotify caps `limit` at 10 per type (it was 50
+// before the Feb 2026 API change), so this asks for the max of each rather than paging
+async function runSearch($: any, options: any, query: string): Promise<void> {
+  searchQuery = query;
+  searchResults = null;
+  $.ui.invalidate('ui.render');
+  const params = new URLSearchParams({ q: query, type: 'track,album,artist,playlist', limit: '10' });
+  const json = await spotifyApi($, options, 'GET', `/search?${params.toString()}`);
+  searchResults = toSearchResults(json);
+}
+
+async function playSearchResult($: any, options: any, r: SearchResult): Promise<void> {
+  await playOnDevice($, options, r.kind === 'track' ? { uris: [r.uri] } : { context_uri: r.uri });
 }
 
 async function openFullscreen($: any, options: any): Promise<void> {
@@ -561,6 +580,42 @@ function renderFullscreen($: any, e: any, options: any) {
     </Box>
   ) : null;
 
+  if (searchQuery !== null) {
+    const icon = { track: '▸', album: '◉', artist: '☺', playlist: '≡' } as const;
+    return (
+      <Box flexDirection="column">
+        <Box flexDirection="row" columnGap={2}>
+          <Button
+            key="pane:back-search"
+            label="‹"
+            onPress={afterPaneAction(async () => {
+              searchQuery = null;
+              searchResults = null;
+            })}
+          />
+          <Markdown text={`**Search:** ${searchQuery}`} />
+        </Box>
+        {errorBanner}
+        {searchResults === null ? (
+          <Text dimColor>searching…</Text>
+        ) : searchResults.length === 0 ? (
+          <Text dimColor>no results</Text>
+        ) : (
+          <Box flexDirection="column">
+            {searchResults.map(r => (
+              <Button
+                key={`result:${r.uri}`}
+                plain
+                label={`${icon[r.kind]} ${r.name} — ${r.detail}`}
+                onPress={afterPaneAction(() => playSearchResult($, options, r))}
+              />
+            ))}
+          </Box>
+        )}
+      </Box>
+    );
+  }
+
   if (selectedPlaylist) {
     const playlist = selectedPlaylist;
     return (
@@ -599,6 +654,20 @@ function renderFullscreen($: any, e: any, options: any) {
 
   return (
     <Box flexDirection="column">
+      <Input
+        key="pane:search"
+        placeholder="search songs, albums, artists, playlists…"
+        onSubmit={value => {
+          const q = value.trim();
+          if (!q) return;
+          runSearch($, options, q)
+            .catch((err: any) => {
+              searchResults = [];
+              paneError = err?.message ?? String(err);
+            })
+            .then(() => $.ui.invalidate('ui.render'));
+        }}
+      />
       <Markdown text="**Playlists**" />
       {errorBanner}
       {playlists === null ? (
