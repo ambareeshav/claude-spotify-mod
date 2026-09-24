@@ -668,6 +668,7 @@ function renderFullscreen($: any, e: any, options: any) {
 
   if (searchQuery !== null) {
     const icon = { track: '▸', album: '◉', artist: '☺', playlist: '≡' } as const;
+    const sectionTitle = { track: 'Songs', album: 'Albums', artist: 'Artists', playlist: 'Playlists' } as const;
     return (
       <Box flexDirection="column">
         <Box flexDirection="row" columnGap={2}>
@@ -688,14 +689,24 @@ function renderFullscreen($: any, e: any, options: any) {
           <Text dimColor>no results</Text>
         ) : (
           <Box flexDirection="column">
-            {searchResults.map(r => (
-              <Button
-                key={`result:${r.uri}`}
-                plain
-                label={`${icon[r.kind]} ${r.name} — ${r.detail}${canOpen(r) ? '  ›' : ''}`}
-                onPress={afterPaneAction(() => (canOpen(r) ? openSearchResult($, options, r) : playSearchResult($, options, r)))}
-              />
-            ))}
+            {/* a heading per kind (in toSearchResults' order), skipped when that kind came back empty */}
+            {(['track', 'album', 'artist', 'playlist'] as const).map(kind => {
+              const rows = searchResults!.filter(r => r.kind === kind);
+              if (rows.length === 0) return null;
+              return (
+                <Box key={`section:${kind}`} flexDirection="column">
+                  <Markdown text={`**${sectionTitle[kind]}**`} />
+                  {rows.map(r => (
+                    <Button
+                      key={`result:${r.uri}`}
+                      plain
+                      label={`${icon[r.kind]} ${r.name} — ${r.detail}${canOpen(r) ? '  ›' : ''}`}
+                      onPress={afterPaneAction(() => (canOpen(r) ? openSearchResult($, options, r) : playSearchResult($, options, r)))}
+                    />
+                  ))}
+                </Box>
+              );
+            })}
           </Box>
         )}
       </Box>

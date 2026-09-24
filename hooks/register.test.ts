@@ -411,6 +411,7 @@ test('searching lists results and plays a track by uri, an album by context', as
   expect(apiCalls.some(c => c.includes('/v1/search?q=midnight+city&type=track%2Calbum%2Cartist%2Cplaylist&limit=10'))).toBe(true);
   expect(await pane.find({ text: /Found Song/ })).toBeDefined();
   expect(await pane.find({ text: /Found Album/ })).toBeDefined();
+  for (const heading of [/Songs/, /Albums/, /Artists/, /Playlists/]) expect(await pane.find({ text: heading })).toBeDefined();
 
   await pane.press({ key: 'result:spotify:track:sss' });
   expect(bodies[bodies.length - 1]).toBe(JSON.stringify({ uris: ['spotify:track:sss'] }));
