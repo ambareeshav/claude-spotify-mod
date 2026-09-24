@@ -13,7 +13,7 @@ import {
   randomVerifier,
   serverScriptFilePath,
 } from './lib/spotifyAuth';
-import { shuffled, tokenSetFrom, toPlaylists, toPlaylistTracks, toSearchResults, type Playlist, type PlaylistTrack, type SearchResult, type TokenSet } from './lib/spotifyApi';
+import { shuffled, tokenSetFrom, toPlaylists, toPlaylistTracks, toArtistAlbums, toSearchResults, type Playlist, type PlaylistTrack, type SearchResult, type TokenSet } from './lib/spotifyApi';
 
 // Spotify controls above the prompt (the same band tetris and pong draw in), plus a fullscreen
 // sidebar for the things AppleScript can't do at all: browsing/playing playlists. The band talks
@@ -80,6 +80,10 @@ let selectedPlaylist: Playlist | null = null;
 let playlistTracks: PlaylistTrack[] | null = null;
 let searchQuery: string | null = null; // non-null while the sidebar shows search results
 let searchResults: SearchResult[] | null = null;
+// what was opened from search, innermost last: search → artist → album, or search → album/playlist.
+// ‹ pops one; an empty stack is the results list itself
+type BrowseFrame = { item: SearchResult; tracks: PlaylistTrack[] | null; albums: SearchResult[] | null };
+let browseStack: BrowseFrame[] = [];
 let myUserId: string | null = null; // cached from /me, so loadPlaylists doesn't refetch it every time
 
 // most installs never set this — it's an optional escape hatch for someone who wants their own
@@ -302,6 +306,7 @@ async function logout($: any): Promise<void> {
   playlistTracks = null;
   searchQuery = null;
   searchResults = null;
+  browseStack = [];
   myUserId = null;
   await $.store.set(TOKEN_STORE_KEY, null).catch((err: any) => $.ui.log(`spotify: token store clear failed: ${err}`));
 }
@@ -390,14 +395,54 @@ async function playPlaylist($: any, options: any, playlistId: string, shuffle: b
 async function runSearch($: any, options: any, query: string): Promise<void> {
   searchQuery = query;
   searchResults = null;
+  browseStack = [];
   $.ui.invalidate('ui.render');
   const params = new URLSearchParams({ q: query, type: 'track,album,artist,playlist', limit: '10' });
+  await ensureMyUserId($, options).catch(() => {}); // for canOpen's ownership check
   const json = await spotifyApi($, options, 'GET', `/search?${params.toString()}`);
   searchResults = toSearchResults(json);
 }
 
 async function playSearchResult($: any, options: any, r: SearchResult): Promise<void> {
   await playOnDevice($, options, r.kind === 'track' ? { uris: [r.uri] } : { context_uri: r.uri });
+}
+
+// a playlist you don't own can still be *played* (it's just a context_uri), but its tracks 403
+// since Spotify's Feb 2026 change — so only an owned one opens; anything else plays on press
+function canOpen(r: SearchResult): boolean {
+  if (r.kind === 'album' || r.kind === 'artist') return true;
+  return r.kind === 'playlist' && !!myUserId && r.ownerId === myUserId;
+}
+
+async function openSearchResult($: any, options: any, item: SearchResult): Promise<void> {
+  const frame: BrowseFrame = { item, tracks: null, albums: null };
+  browseStack = [...browseStack, frame];
+  $.ui.invalidate('ui.render');
+  try {
+    await loadFrame($, options, frame);
+  } catch (err) {
+    // an empty list plus the error banner, rather than "loading…" forever
+    if (item.kind === 'artist') frame.albums = [];
+    else frame.tracks = [];
+    throw err;
+  }
+}
+
+async function loadFrame($: any, options: any, frame: BrowseFrame): Promise<void> {
+  const item = frame.item;
+  if (item.kind === 'artist') {
+    const json = await spotifyApi($, options, 'GET', `/artists/${item.id}/albums?include_groups=album,single&limit=10`);
+    frame.albums = toArtistAlbums(json);
+  } else if (item.kind === 'album') {
+    frame.tracks = toPlaylistTracks(await spotifyApi($, options, 'GET', `/albums/${item.id}/tracks?limit=50`));
+  } else {
+    frame.tracks = toPlaylistTracks(await spotifyApi($, options, 'GET', `/playlists/${item.id}/items?limit=50`));
+  }
+}
+
+async function playContext($: any, options: any, contextUri: string, shuffle: boolean): Promise<void> {
+  await spotifyApi($, options, 'PUT', `/me/player/shuffle?state=${shuffle}`).catch(() => {});
+  await playOnDevice($, options, { context_uri: contextUri });
 }
 
 async function openFullscreen($: any, options: any): Promise<void> {
@@ -580,6 +625,47 @@ function renderFullscreen($: any, e: any, options: any) {
     </Box>
   ) : null;
 
+  if (searchQuery !== null && browseStack.length > 0) {
+    const frame = browseStack[browseStack.length - 1];
+    const it = frame.item;
+    const back = (
+      <Button key="pane:back-browse" label="‹" onPress={afterPaneAction(async () => { browseStack = browseStack.slice(0, -1); })} />
+    );
+    const body = it.kind === 'artist'
+      ? frame.albums === null ? <Text dimColor>loading…</Text> : frame.albums.length === 0 ? <Text dimColor>no albums</Text> : (
+          <Box flexDirection="column">
+            {frame.albums.map(a => (
+              <Button key={`browse:${a.uri}`} plain label={`◉ ${a.name}`} onPress={afterPaneAction(() => openSearchResult($, options, a))} />
+            ))}
+          </Box>
+        )
+      : frame.tracks === null ? <Text dimColor>loading…</Text> : frame.tracks.length === 0 ? <Text dimColor>no tracks</Text> : (
+          <Box flexDirection="column">
+            {/* played inside its album/playlist (offset), so the rest of it follows on after */}
+            {frame.tracks.map(t => (
+              <Button
+                key={`browse:${t.uri}`}
+                plain
+                label={`▸ ${t.name} — ${t.artist}`}
+                onPress={afterPaneAction(() => playOnDevice($, options, { context_uri: it.uri, offset: { uri: t.uri } }))}
+              />
+            ))}
+          </Box>
+        );
+    return (
+      <Box flexDirection="column">
+        <Box flexDirection="row" columnGap={2}>
+          {back}
+          <Button key="pane:browse-play" label="▶" onPress={afterPaneAction(() => playContext($, options, it.uri, false))} />
+          <Button key="pane:browse-shuffle" label="🔀" onPress={afterPaneAction(() => playContext($, options, it.uri, true))} />
+          <Markdown text={`**${it.name}**  ·  ${it.detail}`} />
+        </Box>
+        {errorBanner}
+        {body}
+      </Box>
+    );
+  }
+
   if (searchQuery !== null) {
     const icon = { track: '▸', album: '◉', artist: '☺', playlist: '≡' } as const;
     return (
@@ -606,8 +692,8 @@ function renderFullscreen($: any, e: any, options: any) {
               <Button
                 key={`result:${r.uri}`}
                 plain
-                label={`${icon[r.kind]} ${r.name} — ${r.detail}`}
-                onPress={afterPaneAction(() => playSearchResult($, options, r))}
+                label={`${icon[r.kind]} ${r.name} — ${r.detail}${canOpen(r) ? '  ›' : ''}`}
+                onPress={afterPaneAction(() => (canOpen(r) ? openSearchResult($, options, r) : playSearchResult($, options, r)))}
               />
             ))}
           </Box>

@@ -139,12 +139,27 @@ function installWebApiMocks(on: any, opts: { apiCalls?: string[]; bodies?: strin
           headers: {},
           text: JSON.stringify({
             tracks: { items: [{ uri: 'spotify:track:sss', name: 'Found Song', artists: [{ name: 'Found Artist' }] }, null] },
-            albums: { items: [{ uri: 'spotify:album:alb', name: 'Found Album', artists: [{ name: 'Found Artist' }] }] },
-            artists: { items: [] },
-            playlists: { items: [null] },
+            albums: { items: [{ id: 'alb', uri: 'spotify:album:alb', name: 'Found Album', artists: [{ name: 'Found Artist' }] }] },
+            artists: { items: [{ id: 'art', uri: 'spotify:artist:art', name: 'Found Artist' }] },
+            playlists: {
+              items: [
+                null,
+                { id: 'pl1', uri: 'spotify:playlist:pl1', name: 'Mine Found', owner: { id: 'my-id' } },
+                { id: 'pl9', uri: 'spotify:playlist:pl9', name: 'Theirs Found', owner: { id: 'someone-else' } },
+              ],
+            },
           }),
         },
       };
+    }
+    if (url.includes('/albums/alb/tracks')) {
+      return { value: { status: 200, ok: true, headers: {}, text: JSON.stringify({ items: [{ uri: 'spotify:track:t1', name: 'Album Cut', artists: [{ name: 'Found Artist' }] }] }) } };
+    }
+    if (url.includes('/artists/art/albums')) {
+      return { value: { status: 200, ok: true, headers: {}, text: JSON.stringify({ items: [{ id: 'alb', uri: 'spotify:album:alb', name: 'Found Album', artists: [{ name: 'Found Artist' }] }] }) } };
+    }
+    if (url.includes('/me/player/shuffle')) {
+      return { value: { status: 204, ok: true, headers: {}, text: '' } };
     }
     if (url.includes('/me/player/play')) {
       return { value: { status: 204, ok: true, headers: {}, text: '' } };
@@ -399,8 +414,32 @@ test('searching lists results and plays a track by uri, an album by context', as
 
   await pane.press({ key: 'result:spotify:track:sss' });
   expect(bodies[bodies.length - 1]).toBe(JSON.stringify({ uris: ['spotify:track:sss'] }));
+  // a playlist someone else owns can't be opened (its tracks 403) — pressing it plays instead
+  await pane.press({ key: 'result:spotify:playlist:pl9' });
+  expect(bodies[bodies.length - 1]).toBe(JSON.stringify({ context_uri: 'spotify:playlist:pl9' }));
+
+  // an album opens to its tracks; a track plays inside the album, so the rest follows on
   await pane.press({ key: 'result:spotify:album:alb' });
+  expect(await pane.find({ text: /Album Cut/ })).toBeDefined();
+  await pane.press({ key: 'browse:spotify:track:t1' });
+  expect(bodies[bodies.length - 1]).toBe(JSON.stringify({ context_uri: 'spotify:album:alb', offset: { uri: 'spotify:track:t1' } }));
+  await pane.press({ key: 'pane:browse-play' });
   expect(bodies[bodies.length - 1]).toBe(JSON.stringify({ context_uri: 'spotify:album:alb' }));
+  await pane.press({ key: 'pane:back-browse' });
+
+  // an owned playlist opens to its items
+  await pane.press({ key: 'result:spotify:playlist:pl1' });
+  expect(await pane.find({ text: /Song A/ })).toBeDefined();
+  await pane.press({ key: 'pane:back-browse' });
+
+  // artist → its albums → one album's tracks, and ‹ walks back out one level at a time
+  await pane.press({ key: 'result:spotify:artist:art' });
+  await pane.press({ key: 'browse:spotify:album:alb' });
+  expect(await pane.find({ text: /Album Cut/ })).toBeDefined();
+  await pane.press({ key: 'pane:back-browse' });
+  expect(await pane.find({ text: /Album Cut/ })).toBeUndefined();
+  await pane.press({ key: 'pane:back-browse' });
+  expect(await pane.find({ text: /Found Song/ })).toBeDefined();
 
   await pane.press({ key: 'pane:back-search' });
   expect(await pane.find({ text: /Focus/ })).toBeDefined();

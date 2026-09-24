@@ -47,7 +47,8 @@ export function toPlaylistTracks(json: any): PlaylistTrack[] {
   return items
     // `item` is the current field (a TrackObject or EpisodeObject); `track` is Spotify's own
     // deprecated alias for the same thing, kept here only as a fallback for an older response
-    .map((it: any) => it.item ?? it.track)
+    // an album's /tracks items are the track objects themselves, with no wrapper at all
+    .map((it: any) => it.item ?? (typeof it.track === 'object' ? it.track : it))
     .filter((t: any) => t && t.uri)
     .map((t: any) => ({
       uri: t.uri,
@@ -58,7 +59,8 @@ export function toPlaylistTracks(json: any): PlaylistTrack[] {
 
 // one row of /v1/search, flattened across the types the sidebar asks for. `kind` picks how it
 // plays: a track goes in as `uris`, an album/artist/playlist as its own `context_uri`
-export type SearchResult = { kind: 'track' | 'album' | 'artist' | 'playlist'; uri: string; name: string; detail: string };
+// `ownerId` is only set for playlists: only an owned one can be opened (see register.tsx)
+export type SearchResult = { kind: 'track' | 'album' | 'artist' | 'playlist'; id: string; uri: string; name: string; detail: string; ownerId?: string };
 
 const joinArtists = (x: any) => (x?.artists ?? []).map((a: any) => a.name).join(', ');
 
@@ -68,11 +70,16 @@ export function toSearchResults(json: any): SearchResult[] {
   const pick = (key: string, kind: SearchResult['kind'], detail: (x: any) => string): SearchResult[] =>
     (Array.isArray(json?.[key]?.items) ? json[key].items : [])
       .filter((x: any) => x && x.uri)
-      .map((x: any) => ({ kind, uri: x.uri, name: x.name ?? '(untitled)', detail: detail(x) }));
+      .map((x: any) => ({ kind, id: x.id, uri: x.uri, name: x.name ?? '(untitled)', detail: detail(x), ...(kind === 'playlist' ? { ownerId: x.owner?.id } : {}) }));
   return [
     ...pick('tracks', 'track', joinArtists),
     ...pick('albums', 'album', joinArtists),
     ...pick('artists', 'artist', () => 'artist'),
     ...pick('playlists', 'playlist', (p: any) => `by ${p.owner?.display_name ?? p.owner?.id ?? 'unknown'}`),
   ];
+}
+
+// /artists/{id}/albums — the one artist listing left after Spotify dropped top-tracks (Feb 2026)
+export function toArtistAlbums(json: any): SearchResult[] {
+  return toSearchResults({ albums: json });
 }
