@@ -1,6 +1,6 @@
-# spotify
+# Claude Code Spotify Mod
 
-Skip a bad song without leaving the terminal. `/spotify` puts play/pause/skip/mute right above the prompt — no setup beyond having Spotify open — and a `◫` opens your playlists in a proper sidebar once you've connected your account.
+A Spotify plugin for Claude Code. Skip a bad song without leaving the terminal. `/spotify` puts play/pause/skip/mute right above the prompt — no setup beyond having Spotify open — and a `◫` opens your playlists in a proper sidebar once you've connected your account.
 
 ## Install
 
