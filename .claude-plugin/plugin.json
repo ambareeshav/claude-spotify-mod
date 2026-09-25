@@ -1,7 +1,7 @@
 {
   "name": "spotify",
-  "version": "0.13.3",
-  "description": "Icon-only Spotify controls above the prompt (prev/play-pause/next/mute, AppleScript, no login) with a fullscreen sidebar for browsing/playing your playlists and Liked Songs (Spotify Web API, one-time login — just connect, no Spotify Developer app of your own needed).",
+  "version": "0.14.0",
+  "description": "Icon-only Spotify controls above the prompt (prev/play-pause/next/mute, AppleScript, no login) with a fullscreen sidebar for browsing/playing your playlists and Liked Songs (Spotify Web API, needs your own free Spotify app's Client ID: /spotify config <id>).",
   "author": {
     "name": "Ambareesha Vittal"
   },
@@ -18,8 +18,8 @@
   "userConfig": {
     "clientId": {
       "type": "string",
-      "title": "Spotify Client ID (advanced, optional)",
-      "description": "Leave blank to use this mod's own shared Spotify app — just press connect and log in. Only set this if you want to use your own Spotify Developer app instead (developer.spotify.com/dashboard, Redirect URI exactly http://127.0.0.1:8907/callback)."
+      "title": "Spotify Client ID (optional)",
+      "description": "Your Spotify app's Client ID (developer.spotify.com/dashboard, Redirect URI exactly http://127.0.0.1:8907/callback). Easier: run /spotify config <client-id> instead. When set here, this wins over that."
     }
   }
 }

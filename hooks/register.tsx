@@ -3,10 +3,10 @@ import type { Register } from 'claude-code';
 import { formatTime, parseNowPlaying, progressBar, type NowPlaying } from './lib/applescript';
 import {
   REDIRECT_URI,
-  SHARED_CLIENT_ID,
   authUrl,
   callbackFilePath,
   challengeFor,
+  isClientId,
   extractCode,
   loopbackServerScript,
   randomState,
@@ -23,6 +23,7 @@ import { shuffled, tokenSetFrom, toPlaylists, toPlaylistTracks, toArtistAlbums, 
 
 const PANE_ID = 'spotify-full';
 const TOKEN_STORE_KEY = 'spotify:tokens';
+const CLIENT_ID_STORE_KEY = 'spotify:clientId';
 // not a real playlist id — Spotify never returns "Liked Songs" from /me/playlists at all (it's
 // not a playlist resource), so this mod synthesizes one from /me/tracks (the "Your Music" saved
 // tracks endpoint) to make it browsable/playable the same way as any other playlist
@@ -86,13 +87,27 @@ type BrowseFrame = { item: SearchResult; tracks: PlaylistTrack[] | null; albums:
 let browseStack: BrowseFrame[] = [];
 let myUserId: string | null = null; // cached from /me, so loadPlaylists doesn't refetch it every time
 
-// most installs never set this — it's an optional escape hatch for someone who wants their own
-// Spotify Developer app instead of this mod's shared one (its own Development Mode allow-list, a
-// personal rate limit, whatever the reason). Everyone else gets SHARED_CLIENT_ID for free.
-function clientIdFrom(options: any): string {
-  const id = (options?.clientId ?? '').trim();
-  return id || SHARED_CLIENT_ID;
+// the person's own Spotify app: `/spotify config <id>` stores it (read fresh each time, so every
+// open session sees a change), and the plugin's `clientId` setting, if set, wins over that
+async function clientIdFrom($: any, options: any): Promise<string | null> {
+  const fromSettings = String(options?.clientId ?? '').trim();
+  if (fromSettings) return fromSettings;
+  try {
+    const stored = await $.store.get(CLIENT_ID_STORE_KEY);
+    return typeof stored === 'string' && stored ? stored : null;
+  } catch {
+    return null;
+  }
 }
+
+async function requireClientId($: any, options: any): Promise<string> {
+  const id = await clientIdFrom($, options);
+  if (!id) throw new Error('no Spotify Client ID set — run /spotify config <client-id> first (see the README)');
+  return id;
+}
+
+// checked once per sidebar draw, for the setup screen (a render hook can't await per button)
+let hasClientId = false;
 
 // ---------- local desktop control (AppleScript) ----------
 
@@ -199,7 +214,7 @@ async function exchangeCode($: any, options: any, code: string): Promise<void> {
     grant_type: 'authorization_code',
     code,
     redirect_uri: REDIRECT_URI,
-    client_id: clientIdFrom(options),
+    client_id: await requireClientId($, options),
     code_verifier: pendingLogin.verifier,
   });
   const res = await $.http.fetch('https://accounts.spotify.com/api/token', {
@@ -218,7 +233,7 @@ async function refreshAccessToken($: any, options: any): Promise<void> {
   const body = new URLSearchParams({
     grant_type: 'refresh_token',
     refresh_token: auth.refreshToken,
-    client_id: clientIdFrom(options),
+    client_id: await requireClientId($, options),
   });
   const res = await $.http.fetch('https://accounts.spotify.com/api/token', {
     method: 'POST',
@@ -266,7 +281,7 @@ async function spotifyApi($: any, options: any, method: string, path: string, bo
 // not-connected screen renders — routing it anywhere else used to render as nothing at all
 async function startLogin($: any, options: any): Promise<void> {
   try {
-    const clientId = clientIdFrom(options);
+    const clientId = await requireClientId($, options);
     const verifier = randomVerifier();
     const state = randomState();
     const challenge = await challengeFor(verifier);
@@ -769,6 +784,28 @@ function renderPaneBody($: any, e: any, options: any) {
     $.ui.invalidate('ui.render');
   };
 
+  // no app of their own yet: the band and the header above still work, only the Web API needs this
+  if (!auth && !hasClientId) {
+    const steps = [
+      'To search and browse your playlists, connect',
+      'your own (free) Spotify app:',
+      '',
+      '1. developer.spotify.com/dashboard → Create app',
+      '   Redirect URI: http://127.0.0.1:8907/callback',
+      '   APIs: Web API',
+      '2. Copy its Client ID, then run:',
+      '   /spotify config <client-id>',
+    ];
+    return (
+      <Box flexDirection="column">
+        <Box {...line()}><Text bold color={SPOTIFY_GREEN}>Set up search & playlists</Text></Box>
+        {steps.map((t, i) => (
+          <Box key={`pane:setup:${i}`} {...line()}><Text dimColor={t.startsWith('   ')}>{t || ' '}</Text></Box>
+        ))}
+      </Box>
+    );
+  }
+
   if (!auth) {
     return (
       <Box flexDirection="column" {...line(pendingLogin ? 8 : 2)}>
@@ -996,8 +1033,27 @@ function renderPaneBody($: any, e: any, options: any) {
 
 // ---------- wiring ----------
 
-async function handleCommandRun($: any, e: any): Promise<{ text?: string }> {
-  const arg = (e.args as string).trim().toLowerCase();
+async function handleCommandRun($: any, e: any, options: any): Promise<{ text?: string }> {
+  const raw = (e.args as string).trim();
+  const arg = raw.toLowerCase();
+  if (arg === 'config' || arg.startsWith('config ')) {
+    const id = raw.slice('config'.length).trim();
+    if (!id) {
+      const current = await clientIdFrom($, options);
+      return {
+        text: current
+          ? `$Spotify Client ID: ${current} · /spotify config <client-id> to change it`
+          : '$Spotify has no Client ID yet · create an app at developer.spotify.com/dashboard, then /spotify config <client-id>',
+      };
+    }
+    if (!isClientId(id)) return { text: `$Spotify: "${id}" isn't a Client ID — it's the 32-character hex string on your app's page` };
+    await $.store.set(CLIENT_ID_STORE_KEY, id);
+    // tokens belong to the app that issued them, so a new app means logging in again
+    await logout($);
+    hasClientId = true;
+    $.ui.invalidate('ui.render');
+    return { text: '$Spotify Client ID saved · open ◫ and press "connect Spotify" to log in' };
+  }
   if (arg === 'stop' || arg === 'close') {
     open = false;
     $.ui.invalidate('ui.render');
@@ -1031,6 +1087,7 @@ async function handleAbovePromptRender($: any, e: any, next: any, options: any) 
 async function handlePaneRender($: any, e: any, next: any, options: any) {
   if (e.requestId !== PANE_ID) return next(e);
   if (!auth) await loadAuth($); // same reload case as ensurePlaylistsLoading: module state is gone, the store isn't
+  if (!auth) hasClientId = !!(await clientIdFrom($, options));
   return renderFullscreen($, e, options);
 }
 
@@ -1063,7 +1120,7 @@ async function handleSessionStart($: any, e: any, next: any) {
     .register({
       name: 'spotify',
       description: '$Spotify controls above the prompt (stop closes, logout resets the connection)',
-      argumentHint: '[stop|logout]',
+      argumentHint: '[stop|logout|config <client-id>]',
       immediate: true,
     })
     .catch((err: any) => $.ui.log(`spotify: /spotify not registered: ${err}`));
@@ -1072,7 +1129,7 @@ async function handleSessionStart($: any, e: any, next: any) {
 
 export const register: Register = (on, options) => {
   on('session.start', handleSessionStart);
-  on('command.run', { command: 'spotify' }, ($, e) => handleCommandRun($, e));
+  on('command.run', { command: 'spotify' }, ($, e) => handleCommandRun($, e, options));
   on('ui.render', { component: 'AbovePrompt' }, ($, e, next) => handleAbovePromptRender($, e, next, options));
   on('ui.render', { component: 'Pane' }, ($, e, next) => handlePaneRender($, e, next, options));
   on('ui.message', ($, e, next) => handleUiMessage($, e, next, options));

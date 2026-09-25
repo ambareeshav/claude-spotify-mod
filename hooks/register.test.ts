@@ -66,11 +66,16 @@ const PANE_PROPS = {
   view: {},
 };
 
-function installStoreMocks(on: any, opts: { initialToken?: unknown } = {}) {
+// a Client ID is set unless a test says otherwise — it's the person's own, from /spotify config
+function installStoreMocks(on: any, opts: { initialToken?: unknown; clientId?: string | null } = {}) {
   let token = opts.initialToken ?? undefined;
-  on('store.get', async ($: any, e: any) => ({ value: e.key === 'spotify:tokens' ? token : undefined }));
+  let clientId: unknown = opts.clientId === undefined ? 'test-client-id' : opts.clientId ?? undefined;
+  on('store.get', async ($: any, e: any) => ({
+    value: e.key === 'spotify:tokens' ? token : e.key === 'spotify:clientId' ? clientId : undefined,
+  }));
   on('store.set', async ($: any, e: any) => {
     if (e.key === 'spotify:tokens') token = e.value;
+    if (e.key === 'spotify:clientId') clientId = e.value;
     return { value: undefined };
   });
   on('ui.open', async () => ({ value: undefined }));
@@ -281,29 +286,30 @@ test('the ticker client posts a tick every second, refreshing the position witho
   await ui.unmount();
 });
 
-test('with no Client ID configured, connecting falls back to the shared app instead of failing', async ($: any, on: any) => {
-  // `register(on, {})` here really does mean "nobody set a Client ID" — the test harness
-  // always resolves userConfig to its manifest defaults regardless of what's passed to
-  // register() directly, and the manifest sets none. `clientIdFrom` used to throw in this
-  // case; now it falls back to the mod's own shared Client ID, so login proceeds normally.
+test('with no Client ID, the sidebar shows setup steps; /spotify config saves one and enables connecting', async ($: any, on: any) => {
   register(on, {});
-  installMocks(on);
-  installStoreMocks(on);
+  const calls: string[] = [];
+  installMocks(on, { playCalls: calls });
+  installStoreMocks(on, { clientId: null });
   installWebApiMocks(on);
 
-  await $.command.run({ command: 'spotify', args: '' });
-  const band = await $.ui.mount({ plugin: 'spotify', surface: 'terminal', component: 'AbovePrompt', requestId: 'spotify', props: BAND_PROPS });
-  await band.press({ key: 'spotify:full' });
-  await band.unmount();
-
+  await $.command.run({ command: 'spotify', args: '' }); // reads what's playing
   const pane = await $.ui.mount({ plugin: 'spotify', surface: 'terminal', component: 'Pane', requestId: 'spotify-full', props: PANE_PROPS });
-  expect(await pane.find({ text: /connect Spotify/ })).toBeDefined();
+  expect(await pane.find({ text: /\/spotify config <client-id>/ })).toBeDefined();
+  expect(await pane.find({ key: 'pane:connect' })).toBeUndefined();
+  expect(await pane.find({ text: /Now playing/ })).toBeDefined(); // the header needs no app at all
 
+  const bad = await $.command.run({ command: 'spotify', args: 'config nope' });
+  expect(bad.text).toContain("isn't a Client ID");
+
+  const id = 'ABCDEF0123456789abcdef0123456789'; // case kept: only `config` itself is case-insensitive
+  const ok = await $.command.run({ command: 'spotify', args: `config ${id}` });
+  expect(ok.text).toContain('saved');
+  expect((await $.command.run({ command: 'spotify', args: 'config' })).text).toContain(id);
+
+  await pane.redraw(PANE_PROPS);
   await pane.press({ key: 'pane:connect' });
-  // no error — the auth URL got opened (via the shared Client ID) and a pending login started
-  expect(await pane.find({ text: /Spotify Client ID/ })).toBeUndefined();
-  expect(await pane.find({ text: /approve in the browser/i })).toBeDefined();
-
+  expect(calls.some(c => c.startsWith('open ') && c.includes(`client_id=${id}`))).toBe(true);
   await pane.unmount();
 });
 
@@ -544,7 +550,9 @@ test('/spotify logout clears the connection and returns the sidebar to the conne
   // reads back the last write, so the pane's own reload-recovery loadAuth sees the cleared store
   on('store.get', async ($: any, e: any) => ({
     value:
-      e.key !== 'spotify:tokens'
+      e.key === 'spotify:clientId'
+        ? 'test-client-id'
+        : e.key !== 'spotify:tokens'
         ? undefined
         : storeWrites.length
           ? storeWrites[storeWrites.length - 1]

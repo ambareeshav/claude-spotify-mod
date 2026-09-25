@@ -1,5 +1,8 @@
 # Claude Code Spotify Mod
-<img width="128" height="128" alt="467aaf4c-bac3-48b5-806b-af480625bb20" src="https://github.com/user-attachments/assets/cd191646-521c-4554-b445-f4e06c5fefdc" /> A Spotify plugin for Claude Code. Skip a bad song without leaving the terminal. `/spotify` puts play/pause/skip/mute right above the prompt, no setup beyond having Spotify open — and a `◫` opens your playlists in a proper sidebar once you've connected your account.
+<img width="128" height="128" alt="467aaf4c-bac3-48b5-806b-af480625bb20" src="https://github.com/user-attachments/assets/cd191646-521c-4554-b445-f4e06c5fefdc" /> A Spotify plugin for Claude Code. Skip a bad song without leaving the terminal. `/spotify` puts play/pause/skip/mute and what's playing right above the prompt, with nothing to set up beyond having Spotify open. `◫` opens a sidebar with the album cover, and once you connect your own (free) Spotify app, search and your playlists too.
+
+**Works out of the box:** playback controls, now playing, album art.
+**Needs your own Spotify Client ID** (a couple of minutes, see [below](#connecting-the-sidebar)): search, playlists, Liked Songs.
 
 ## Install
 
@@ -18,25 +21,21 @@ Restart Claude Code (a full quit/relaunch) and `/spotify` is available.
 4. If Spotify isn't open, the band offers an `open Spotify` button instead of controls.
 5. `◫` opens a sidebar (`Pane`) — a now-playing header with the album cover (in terminals with kitty graphics: Ghostty, kitty; elsewhere just the text) over a black → rust gradient, then a **Playlists** list (with **Liked Songs** always listed first, then playlists you created yourself — followed and other-owned playlists don't show up here, see below), and inside one, its tracks to play individually, `▶` play the whole thing in order, or `🔀` shuffle-play it. `‹` goes back to the list. A search box at the top searches Spotify's whole catalog (songs, albums, artists, playlists — up to 10 of each); a song plays on press; an album, an artist (→ its albums → their tracks) or a playlist you own opens (marked `›`) with `▶`/`🔀` and per-track play that continues through the rest; a playlist someone else owns just plays, since Spotify won't let apps read its tracks. Results are grouped under Songs / Albums / Artists / Playlists; icons: `▸` song, `◉` album, `☺` artist, `≡` playlist. Every list loads in full (page by page, 50 at a time) and scrolls under a pinned header.
 
-## Connecting the sidebar (optional, for playlist browsing)
+## Connecting the sidebar
 
-The band's transport controls need nothing. The sidebar's playlist browsing needs a real Spotify login, because AppleScript's local Spotify dictionary doesn't expose playlists at all — this is a hard requirement of the Spotify Web API, not a shortcut skipped.
+The band needs nothing: it talks to the Spotify desktop app directly. Search and playlists go through the Spotify Web API, which needs a Spotify app of your own. Spotify only lets an app in Development Mode serve its owner and up to 5 added users, so this mod can't ship a shared one.
 
-1. In the sidebar, press **connect Spotify**. Your browser opens Spotify's own login/consent page — no Spotify Developer app or Client ID of your own to set up, this mod ships with a shared one.
-2. After you approve, the browser redirects to `127.0.0.1:8907`. Behind the scenes, pressing **connect Spotify** also spawned a short-lived local listener on that exact port, so this should connect automatically within a second or two — no copy-paste needed.
-3. If it doesn't (no `python3` on your machine, or something else is already using that port), the browser instead shows a "can't reach this page" error — the code is still sitting right there in the address bar. Copy that URL (or just the `code=...` part) and paste it into the sidebar's input field, Enter to submit, as a fallback.
+1. Go to [developer.spotify.com/dashboard](https://developer.spotify.com/dashboard) and create an app (Spotify requires a Premium account for this). Set the Redirect URI to exactly `http://127.0.0.1:8907/callback` and tick **Web API**.
+2. Copy the app's Client ID and run `/spotify config <client-id>`. It's saved for every session. (`/spotify config` on its own shows the current one.)
+3. Open the sidebar with `◫` and press **connect Spotify**. Your browser opens Spotify's login page; approve it, and the sidebar connects on its own within a second or two.
 
-No client secret is stored or needed (PKCE), and neither is the shared Client ID — it's not a secret in this flow at all, which is exactly what lets it ship in the open.
+As the app's owner you're let in automatically, so there's no one to add under User Management. There's no client secret anywhere: the login uses PKCE, where the Client ID isn't a secret.
 
-**Logged in, but every playlist or search fails with a 403?** The shared app is in Spotify's Development Mode, where the Web API only answers for accounts registered on the app. Anyone can log in, but Spotify refuses the sidebar's requests for an account that isn't registered. The fix is your own Spotify app, which takes a couple of minutes:
+If the sidebar doesn't connect by itself (no `python3`, or something else is using port 8907), the browser shows a "can't reach this page" error with the code in the address bar. Paste that URL into the sidebar's input and press Enter.
 
-1. Create an app at [developer.spotify.com/dashboard](https://developer.spotify.com/dashboard) (you need Spotify Premium), with the Redirect URI set to exactly `http://127.0.0.1:8907/callback` and **Web API** selected.
-2. Set `clientId` in this plugin's config (via your Claude Code plugin settings, or `.claude/settings.json`) to that app's Client ID.
-3. Run `/spotify logout`, then press **connect Spotify** again.
+You can also set the Client ID as the plugin's `clientId` setting (your Claude Code plugin settings, or `.claude/settings.json`); that wins over `/spotify config`.
 
-Your own app's owner (you) is registered automatically.
-
-**Starting over**: `/spotify logout` clears the stored connection without touching your Spotify account's own authorization. Press **connect Spotify** afterward to log in again.
+**Starting over**: `/spotify logout` clears the stored login without touching your Spotify account's own authorization. Press **connect Spotify** afterward to log in again.
 
 ## How it works
 
@@ -61,13 +60,12 @@ Your own app's owner (you) is registered automatically.
 - macOS with the Spotify desktop app installed (not the web player) — the band always needs this.
 - Claude Code with `CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1` — the `$` API is early access and may change between releases.
 - The first control you press may prompt macOS for permission to let Claude Code (your terminal) control Spotify via Accessibility/Automation — allow it once.
-- For playlists: a one-time browser login (see above), nothing more. A Spotify Premium account is needed to *start* playback remotely via the Web API (Spotify's own restriction, not this mod's) — browsing works on any account.
-- **The sidebar's Web API calls only work for accounts registered on the Spotify app in use.** The shared app is in Spotify's Development Mode, so if you get 403s after logging in, use your own app's Client ID instead (see *Connecting the sidebar* above).
+- For search and playlists: your own Spotify app's Client ID and a one-time browser login (see above). Creating the app, and starting playback remotely via the Web API, both need Spotify Premium (Spotify's rules, not this mod's).
 - **Only playlists you created yourself show up in the sidebar.** Followed, collaborative-but-not-yours, and algorithmic playlists (Discover Weekly, Daily Mix, a Blend, ...) are filtered out before they're ever listed — their tracks are permanently unreadable via the Web API for any third-party app as of a Feb 2026 Spotify change, so there's nothing to show for them. Liked Songs is unaffected (different endpoint).
 
 ## Known limitations / next steps
 
-- **The shared Spotify app only serves a handful of registered accounts.** Spotify's Development Mode caps an app's registered users, and lifting that cap (Extended Quota Mode) isn't open to hobby projects. Most people will want their own Client ID.
+- **Search and playlists need your own Spotify app.** Spotify's Development Mode caps an app at its owner plus 5 users, so there's no shared app to fall back on.
 - **The local OAuth listener needs `python3` and a free port 8907** — if either's missing, connecting falls back to copy-pasting the redirect URL by hand.
 - **The progress bar ticks once a second**, driven by the ticker `Client`'s own timer — not sample-accurate, but close enough to read at a glance.
 - **Session-scoped mute memory.** The volume mute restores to resets on plugin reload.

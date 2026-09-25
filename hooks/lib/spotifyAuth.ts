@@ -8,13 +8,13 @@
 export const CALLBACK_PORT = 8907;
 export const REDIRECT_URI = `http://127.0.0.1:${CALLBACK_PORT}/callback`;
 
-// a Client ID is not a secret in PKCE (there's no client secret at all) — Spotify's own docs
-// treat it as public, safe to ship in open source. This is the mod's own shared app, reused by
-// every install so nobody has to create their own Spotify Developer app just to log in. Its one
-// real limitation: while the app stays in Spotify's "Development Mode", only accounts the app's
-// owner has registered get Web API answers (anyone can log in; everyone else's calls 403) — see
-// the README, which points people at their own Client ID instead.
-export const SHARED_CLIENT_ID = 'a8a86a5c3bc544d893103a3c503bd9ce';
+// there's no shared Client ID: a Spotify app in Development Mode only answers the Web API for
+// its owner and up to 5 registered users, so a shared one could never serve everyone. Each person
+// brings their own app's ID (`/spotify config <id>`); as its owner they're let in automatically.
+// Spotify Client IDs are 32 hex characters
+export function isClientId(value: string): boolean {
+  return /^[0-9a-f]{32}$/i.test(value);
+}
 
 export const SCOPES = [
   'user-read-playback-state',
