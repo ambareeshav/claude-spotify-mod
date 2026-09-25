@@ -403,9 +403,9 @@ async function loadPlaylistTracks($: any, options: any, playlistId: string): Pro
     // the sidebar only ever lists playlists this account owns (see loadPlaylists) — a playlist
     // you don't own always 403s here (Spotify's Feb 2026 API change) and is filtered out before
     // it can even be selected, so a 403 on something that did show up in the list means the
-    // account itself isn't allow-listed for this app yet, not an ownership problem
+    // account isn't registered on the Spotify app in use, not an ownership problem
     const needs = playlistId === LIKED_SONGS_ID ? 'Liked Songs needs user-library-read' : 'playlists need playlist-read-private';
-    throw new Error(`${message}\n\nYour account isn't allow-listed for this app yet (Users and Access in the dashboard) — ${needs}.`);
+    throw new Error(`${message}\n\nYour account isn't registered on this Spotify app (it's in Development Mode). Set your own app's clientId in the plugin config — see the README (${needs}).`);
   }
 }
 

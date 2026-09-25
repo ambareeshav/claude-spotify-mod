@@ -12,7 +12,8 @@ export const REDIRECT_URI = `http://127.0.0.1:${CALLBACK_PORT}/callback`;
 // treat it as public, safe to ship in open source. This is the mod's own shared app, reused by
 // every install so nobody has to create their own Spotify Developer app just to log in. Its one
 // real limitation: while the app stays in Spotify's "Development Mode", only accounts the app's
-// owner has explicitly allow-listed can connect (capped at 25) — see the README.
+// owner has registered get Web API answers (anyone can log in; everyone else's calls 403) — see
+// the README, which points people at their own Client ID instead.
 export const SHARED_CLIENT_ID = 'a8a86a5c3bc544d893103a3c503bd9ce';
 
 export const SCOPES = [

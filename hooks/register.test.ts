@@ -508,7 +508,7 @@ test('a failed track load shows an error inline without hiding the back button',
   await pane.press({ key: 'playlist:pl1' });
 
   expect(await pane.find({ text: /403/ })).toBeDefined();
-  expect(await pane.find({ text: /allow-listed/ })).toBeDefined();
+  expect(await pane.find({ text: /isn't registered on this Spotify app/ })).toBeDefined();
   // the whole point of the fix: the back button is still there and still works
   expect(await pane.find({ text: '‹' })).toBeDefined();
   await pane.press({ key: 'pane:back-playlists' });
