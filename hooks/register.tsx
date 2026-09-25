@@ -119,6 +119,9 @@ async function refreshNowPlaying($: any): Promise<void> {
 // curl + macOS's own `sips` convert it once per track, keyed by track id so a redraw of the same
 // track sends nothing new
 let art: { trackId: string; path: string | null } | null = null;
+// this session's own prefix: every Claude Code session runs its own copy of this module, and a
+// shared `rm /tmp/spotify-mod-art-*` let one session delete the file another was still drawing
+const ART_PREFIX = `/tmp/spotify-mod-art-${Math.random().toString(36).slice(2, 10)}-`;
 let artLoading = false;
 
 async function refreshArt($: any): Promise<void> {
@@ -128,15 +131,16 @@ async function refreshArt($: any): Promise<void> {
   artLoading = true;
   try {
     const url = (await runOsa($, 'tell application "Spotify" to artwork url of current track')).trim();
-    const path = `/tmp/spotify-mod-art-${trackId.replace(/[^A-Za-z0-9]/g, '')}.png`;
-    // old tracks' art first, so /tmp holds one image at a time
+    const path = `${ART_PREFIX}${trackId.replace(/[^A-Za-z0-9]/g, '')}.png`;
+    // this session's previous track's art first, so it holds one image at a time
     const res = await $.process.run([
       '/bin/sh',
       '-c',
-      'rm -f /tmp/spotify-mod-art-*; curl -sfL "$1" -o "$2.jpg" && sips -s format png "$2.jpg" --out "$2" >/dev/null && rm -f "$2.jpg"',
+      'rm -f "$3"*; curl -sfL "$1" -o "$2.jpg" && sips -s format png "$2.jpg" --out "$2" >/dev/null && rm -f "$2.jpg"',
       'sh',
       url,
       path,
+      ART_PREFIX,
     ]);
     art = { trackId, path: url.startsWith('https://') && res.exitCode === 0 ? path : null };
   } catch {
@@ -738,7 +742,9 @@ function renderNowPlayingHeader($: any, e: any) {
   const np = nowPlaying;
   const showArt = e.surface === 'terminal' && art?.trackId === np.trackId && art.path;
   return (
-    <Box flexDirection="row" columnGap={2} paddingBottom={1} {...line(8)}>
+    // the lines it claims must match what it draws, or the filler under the list comes up short
+    // and the gradient stops above the pane's bottom: 7 for the art, else its text lines, +1 gap
+    <Box flexDirection="row" columnGap={2} paddingBottom={1} {...line((showArt ? 7 : np.album ? 4 : 3) + 1)}>
       {/* 14×7 cells reads as square: a terminal cell is about twice as tall as it is wide */}
       {showArt && <Image key="pane:art" source={{ file: art!.path, format: 'png' }} columns={14} rows={7} alt={np.album || ' '} />}
       <Box flexDirection="column" justifyContent="center">
