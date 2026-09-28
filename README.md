@@ -7,9 +7,11 @@
 ## Install
 
 ```
-claude plugin marketplace add ambareeshav/claude-spotify-mod
-claude plugin install spotify@spotify
+claude plugin marketplace add ambareeshav/claude-plugins
+claude plugin install spotify@ambareeshav
 ```
+
+This adds [all my plugins](https://github.com/ambareeshav/claude-plugins) as one marketplace. To add only this repo instead, use `claude plugin marketplace add ambareeshav/claude-spotify-mod` and `claude plugin install spotify@spotify`.
 
 Restart Claude Code (a full quit/relaunch) and `/spotify` is available.
 
