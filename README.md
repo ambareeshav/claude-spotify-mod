@@ -6,14 +6,25 @@
 
 ## Install
 
+Part of [Ambareesha's Claude Code plugins](https://github.com/ambareeshav/claude-plugins). Add the marketplace once, then install spotify from it.
+
+Inside Claude Code:
+
+```
+/plugin marketplace add ambareeshav/claude-plugins
+/plugin install spotify@ambareeshav
+```
+
+Or, once the marketplace is added, run `/plugin`, open the **ambareeshav** marketplace, and install spotify from the list.
+
+If you're continuing a session, run `/reload-plugins` to turn it on, and `/spotify` is available.
+
+From the terminal:
+
 ```
 claude plugin marketplace add ambareeshav/claude-plugins
 claude plugin install spotify@ambareeshav
 ```
-
-This adds [all my plugins](https://github.com/ambareeshav/claude-plugins) as one marketplace. To add only this repo instead, use `claude plugin marketplace add ambareeshav/claude-spotify-mod` and `claude plugin install spotify@spotify`.
-
-Restart Claude Code (a full quit/relaunch) and `/spotify` is available.
 
 ## Play
 
