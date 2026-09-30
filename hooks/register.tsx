@@ -32,6 +32,7 @@ const LIKED_SONGS_ID = '__liked__';
 // wide enough for the fullest row — close, full, prev, play/pause, next, mute, each bracketed
 // (`[ X ]`) and gapped — without clipping the trailing ones out of the clickable area
 const WIDTH = 52;
+const BAND_ART_COLUMNS = 6;
 
 // the fields the AppleScript prints, joined by FIELD_SEP, in this order.
 // `playerState`, not `st` — Spotify's own scripting dictionary reserves `st` and refuses to
@@ -556,7 +557,7 @@ async function openFullscreen($: any, options: any): Promise<void> {
 // ---------- band (AbovePrompt) ----------
 
 function renderBand($: any, e: any, options: any) {
-  const { Box, Text, Button, Markdown, Client } = $.ui.resolve(e);
+  const { Box, Text, Button, Markdown, Client, Image } = $.ui.resolve(e);
 
   const afterAction = (action: () => Promise<void>) => async () => {
     try {
@@ -596,6 +597,7 @@ function renderBand($: any, e: any, options: any) {
   const ticker = <Client key="spotify:ticker" module="./boards/ticker.tsx" width={0} height={0} />;
 
   let content;
+  let bandArt = false;
   if (errorMessage) {
     content = (
       <Box flexDirection="column">
@@ -629,6 +631,8 @@ function renderBand($: any, e: any, options: any) {
       <Button key="mute" label={np.volume > 0 ? '🔇' : '🔈'} onPress={afterAction(() => toggleMute($))} />
     );
     const trackLine = `${np.track || '(unknown track)'} — ${np.artist}`;
+    // Image is terminal-only, and the compact one-liner has no room for it
+    bandArt = !compact && e.surface === 'terminal' && art?.trackId === np.trackId && !!art.path;
     const timeLine = `${formatTime(np.positionSec)}/${formatTime(np.durationMs / 1000)}`;
     content = compact ? (
       <Box flexDirection="row" columnGap={2}>
@@ -645,18 +649,22 @@ function renderBand($: any, e: any, options: any) {
         <Text dimColor>{timeLine}</Text>
       </Box>
     ) : (
-      <Box flexDirection="column">
-        <Box flexDirection="row" columnGap={2}>
-          {closeButton}
-          {fullButton}
-          {compactButton}
-          <Button key="prev" label="⏮" onPress={afterAction(() => previousTrack($))} />
-          <Button key="playpause" label={np.state === 'playing' ? '⏸' : '▶'} onPress={afterAction(() => playPause($))} />
-          <Button key="next" label="⏭" onPress={afterAction(() => nextTrack($))} />
-          {muteButton}
+      <Box flexDirection="row" columnGap={2}>
+        {/* the stacked band is 3 rows; 6×3 cells reads as square (a cell is ~twice as tall as wide) */}
+        {bandArt && <Image key="band:art" source={{ file: art!.path, format: 'png' }} columns={BAND_ART_COLUMNS} rows={3} alt={np.album || ' '} />}
+        <Box flexDirection="column">
+          <Box flexDirection="row" columnGap={2}>
+            {closeButton}
+            {fullButton}
+            {compactButton}
+            <Button key="prev" label="⏮" onPress={afterAction(() => previousTrack($))} />
+            <Button key="playpause" label={np.state === 'playing' ? '⏸' : '▶'} onPress={afterAction(() => playPause($))} />
+            <Button key="next" label="⏭" onPress={afterAction(() => nextTrack($))} />
+            {muteButton}
+          </Box>
+          <Markdown text={`**${np.track || '(unknown track)'}**  ·  ${np.artist}${np.album ? ' · ' + np.album : ''}`} />
+          <Text dimColor wrap="truncate-end">{`${formatTime(np.positionSec)}  ${progressBar(np.positionSec, np.durationMs, 16)}  ${formatTime(np.durationMs / 1000)}`}</Text>
         </Box>
-        <Markdown text={`**${np.track || '(unknown track)'}**  ·  ${np.artist}${np.album ? ' · ' + np.album : ''}`} />
-        <Text dimColor wrap="truncate-end">{`${formatTime(np.positionSec)}  ${progressBar(np.positionSec, np.durationMs, 16)}  ${formatTime(np.durationMs / 1000)}`}</Text>
       </Box>
     );
   }
@@ -664,7 +672,7 @@ function renderBand($: any, e: any, options: any) {
   // compact mode trades the fixed narrow width for one wide row on purpose — that's the whole
   // point of asking for one line instead of three, so only the stacked layout stays capped
   return (
-    <Box flexDirection="column" width={compact && nowPlaying.running && !errorMessage ? undefined : WIDTH}>
+    <Box flexDirection="column" width={compact && nowPlaying.running && !errorMessage ? undefined : WIDTH + (bandArt ? BAND_ART_COLUMNS + 2 : 0)}>
       {ticker}
       {content}
     </Box>

@@ -612,6 +612,21 @@ test('the sidebar header shows the playing track with its cover art, fetched onc
   await band.unmount();
 });
 
+test('the band shows the cover art beside the track once it has loaded, and hides it in compact mode', async ($: any, on: any) => {
+  register(on, {});
+  installMocks(on);
+
+  await $.command.run({ command: 'spotify', args: '' });
+  const band = await $.ui.mount({ plugin: 'spotify', surface: 'terminal', component: 'AbovePrompt', requestId: 'spotify', props: BAND_PROPS });
+  await band.advance(1000);
+  expect(await band.find({ key: 'band:art' })).toBeDefined();
+  expect(await band.find({ text: /Midnight City/ })).toBeDefined();
+
+  await band.press({ key: 'spotify:compact' });
+  expect(await band.find({ key: 'band:art' })).toBeUndefined();
+  await band.unmount();
+});
+
 test('the pane draws only the list rows that fit under its pinned header', async ($: any, on: any) => {
   register(on, { clientId: 'test-client-id' });
   installMocks(on);

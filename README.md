@@ -1,5 +1,5 @@
 # Claude Code Spotify Mod
-<img width="128" height="128" alt="467aaf4c-bac3-48b5-806b-af480625bb20" src="https://github.com/user-attachments/assets/cd191646-521c-4554-b445-f4e06c5fefdc" /> A Spotify plugin for Claude Code. Skip a bad song without leaving the terminal. `/spotify` puts play/pause/skip/mute and what's playing right above the prompt, with nothing to set up beyond having Spotify open. `◫` opens a sidebar with the album cover, and once you connect your own (free) Spotify app, search and your playlists too.
+<img width="128" height="128" alt="467aaf4c-bac3-48b5-806b-af480625bb20" src="https://github.com/user-attachments/assets/cd191646-521c-4554-b445-f4e06c5fefdc" /> A Spotify plugin for Claude Code. Skip a bad song without leaving the terminal. `/spotify` puts play/pause/skip/mute, the album cover and what's playing right above the prompt, with nothing to set up beyond having Spotify open. `◫` opens a sidebar with the album cover, and once you connect your own (free) Spotify app, search and your playlists too.
 
 **Works out of the box:** playback controls, now playing, album art.
 **Needs your own Spotify Client ID** (a couple of minutes, see [below](#connecting-the-sidebar)): search, playlists, Liked Songs.
